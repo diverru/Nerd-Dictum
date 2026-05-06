@@ -2,7 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AppSettings } from '../shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
+  copyToClipboard: (text: string, autoPaste = false) =>
+    ipcRenderer.invoke('copy-to-clipboard', text, autoPaste),
   log: (message: string) => ipcRenderer.send('renderer-log', message),
   getApiKey: () => ipcRenderer.invoke('get-api-key'),
   getModel: () => ipcRenderer.invoke('get-model'),

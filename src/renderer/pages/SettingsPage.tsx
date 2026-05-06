@@ -145,6 +145,7 @@ export function SettingsPage() {
   const [widgetHidden, setWidgetHidden] = useState(false);
   const [holdToRecordEnabled, setHoldToRecordEnabled] = useState(true);
   const [holdToRecordKey, setHoldToRecordKey] = useState<HoldToRecordKey>('LeftAlt');
+  const [autoPasteEnabled, setAutoPasteEnabled] = useState(true);
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [languageSearch, setLanguageSearch] = useState('');
@@ -176,6 +177,7 @@ export function SettingsPage() {
     widgetHidden: boolean;
     holdToRecordEnabled: boolean;
     holdToRecordKey: HoldToRecordKey;
+    autoPasteEnabled: boolean;
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -205,7 +207,8 @@ export function SettingsPage() {
       hotkey !== initial.hotkey ||
       widgetHidden !== initial.widgetHidden ||
       holdToRecordEnabled !== initial.holdToRecordEnabled ||
-      holdToRecordKey !== initial.holdToRecordKey
+      holdToRecordKey !== initial.holdToRecordKey ||
+      autoPasteEnabled !== initial.autoPasteEnabled
     );
   }, [
     apiKey,
@@ -225,6 +228,7 @@ export function SettingsPage() {
     widgetHidden,
     holdToRecordEnabled,
     holdToRecordKey,
+    autoPasteEnabled,
   ]);
 
   // Load audio devices
@@ -272,6 +276,7 @@ export function SettingsPage() {
         const loadedWidgetHidden = settings.widgetHidden ?? false;
         const loadedHoldToRecordEnabled = settings.holdToRecordEnabled ?? true;
         const loadedHoldToRecordKey = (settings.holdToRecordKey as HoldToRecordKey) || 'LeftAlt';
+        const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? true;
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -290,6 +295,7 @@ export function SettingsPage() {
         setWidgetHidden(loadedWidgetHidden);
         setHoldToRecordEnabled(loadedHoldToRecordEnabled);
         setHoldToRecordKey(loadedHoldToRecordKey);
+        setAutoPasteEnabled(loadedAutoPasteEnabled);
 
         // Store initial settings for unsaved changes comparison
         initialSettingsRef.current = {
@@ -310,6 +316,7 @@ export function SettingsPage() {
           widgetHidden: loadedWidgetHidden,
           holdToRecordEnabled: loadedHoldToRecordEnabled,
           holdToRecordKey: loadedHoldToRecordKey,
+          autoPasteEnabled: loadedAutoPasteEnabled,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -400,6 +407,7 @@ export function SettingsPage() {
         widgetHidden,
         holdToRecordEnabled,
         holdToRecordKey,
+        autoPasteEnabled,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -421,6 +429,7 @@ export function SettingsPage() {
           widgetHidden,
           holdToRecordEnabled,
           holdToRecordKey,
+          autoPasteEnabled,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -733,6 +742,20 @@ export function SettingsPage() {
                 </span>
               </div>
             )}
+
+            <div className="settings-field">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={autoPasteEnabled}
+                  onChange={(e) => setAutoPasteEnabled(e.target.checked)}
+                />
+                <span>Auto-paste transcript</span>
+              </label>
+              <span className="settings-hint">
+                After transcription, simulate ⌘V / Ctrl+V into the active window. Requires Accessibility permission on macOS.
+              </span>
+            </div>
 
             <div className="settings-field">
               <button

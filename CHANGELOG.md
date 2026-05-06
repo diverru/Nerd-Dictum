@@ -10,6 +10,8 @@
 
 [2026-05-06] Voice UX — Restored hold-to-record via `uiohook-napi`. Default key Left Option (configurable in Settings). Silence-detection auto-stop is suppressed while the key is held — release ends the recording. Universal-build native-module merge handled via `singleArchFiles`/`x64ArchFiles` globs in electron-builder.
 
+[2026-05-06] Voice UX — Auto-paste the transcript into the active window via osascript (`key code 9 using command down`). Cursor/VS Code accept this form (they ignore `keystroke "v"`). Requires Accessibility permission on macOS; toggleable via `autoPasteEnabled`.
+
 ## 2026-04-22
 
 [2026-04-22] Bug — Fix `PROHIBITED_CONTENT` safety-filter false positives from Gemini: on safety block, automatically flush the `<previous_transcripts>` context and retry the request once without it before surfacing the error

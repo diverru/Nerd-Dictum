@@ -126,6 +126,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   widgetHidden: false,
   holdToRecordEnabled: true,
   holdToRecordKey: 'LeftAlt',
+  autoPasteEnabled: true,
 };
 
 function getSettingsPath(): string {
@@ -1273,7 +1274,7 @@ app.on('activate', () => {
 });
 
 // IPC handlers
-ipcMain.handle('copy-to-clipboard', (_event, text: string) => {
+ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false) => {
   log('[Clipboard] Copying transcript (' + text.length + ' chars):', text.substring(0, 200));
   // Capture current clipboard content before overwriting
   captureCurrentClipboard();
@@ -1284,8 +1285,81 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string) => {
   addTranscriptToHistory(text);
   // Update tray menu to show new history
   updateTrayMenu();
+
+  if (autoPaste && appSettings.autoPasteEnabled) {
+    log('[Clipboard] Auto-paste branch hit — dispatching keystroke');
+    pasteIntoActiveWindow();
+  } else {
+    log(
+      `[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`
+    );
+  }
   return true;
 });
+
+/**
+ * Simulate Cmd+V into the currently-focused window so the just-copied
+ * transcript lands at the user's cursor without keyboard interaction.
+ *
+ * Uses `key code 9 using command down` rather than `keystroke "v"` —
+ * Electron-based apps (Cursor, VS Code, Slack, …) ignore the
+ * character-style `keystroke` form and only react to real keyDown / keyUp
+ * pairs that `key code` produces.
+ *
+ * Requires Accessibility permission. We call
+ * isTrustedAccessibilityClient(true) to surface the system prompt the
+ * first time, and skip the keystroke (with a clear log line) when the
+ * permission isn't granted yet.
+ */
+function pasteIntoActiveWindow(): void {
+  if (process.platform === 'darwin') {
+    const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+    log(`[AutoPaste] Accessibility trusted=${trusted}`);
+    if (!trusted) {
+      log('[AutoPaste] Accessibility permission missing — paste will not work until granted');
+      return;
+    }
+    // Small delay so the source window can regain focus and the clipboard
+    // write is observable to the destination.
+    setTimeout(() => {
+      const clipNow = clipboard.readText();
+      log(
+        `[AutoPaste] pre-keystroke: clipboard.length=${clipNow.length} clipboard.head="${clipNow.substring(0, 60).replace(/\n/g, ' ')}"`
+      );
+      exec(
+        `osascript -e 'tell application "System Events" to set frontApp to name of first application process whose frontmost is true' -e 'return frontApp'`,
+        (frontErr, frontStdout) => {
+          const frontApp = frontStdout?.trim() || '(unknown)';
+          log(`[AutoPaste] frontmost app at paste time: "${frontApp}"${frontErr ? ` (err: ${frontErr.message})` : ''}`);
+          log('[AutoPaste] osascript: key code 9 with command down');
+          exec(
+            `osascript -e 'tell application "System Events" to key code 9 using command down'`,
+            (error, _stdout, stderr) => {
+              if (error) {
+                log('[AutoPaste] Failed:', error.message, '| stderr:', stderr);
+              } else {
+                log('[AutoPaste] keystroke dispatched OK');
+              }
+            }
+          );
+        }
+      );
+    }, 50);
+  } else if (process.platform === 'win32') {
+    setTimeout(() => {
+      const psScript = 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')';
+      exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {
+        if (error) log('[AutoPaste] Failed:', error.message);
+      });
+    }, 50);
+  } else {
+    setTimeout(() => {
+      exec('xdotool key --clearmodifiers ctrl+v', (error) => {
+        if (error) log('[AutoPaste] xdotool not available or failed:', error.message);
+      });
+    }, 50);
+  }
+}
 
 // Forward arbitrary log lines from the renderer process into the unified
 // main-process log (~/Library/Logs/Nerd Dictum/main.log) so timing /
@@ -1326,6 +1400,7 @@ ipcMain.handle('get-settings', () => {
     hotkey: appSettings.hotkey || DEFAULT_HOTKEY,
     holdToRecordEnabled: appSettings.holdToRecordEnabled,
     holdToRecordKey: appSettings.holdToRecordKey,
+    autoPasteEnabled: appSettings.autoPasteEnabled,
   };
 });
 

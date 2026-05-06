@@ -147,6 +147,9 @@ Gemini-direct dictation:
 - **Hold-to-record** (`src/main/keyboard-hook.ts`) via `uiohook-napi`. Default
   is Left Option. Silence-detection auto-stop is suppressed while the key is
   held — release ends the recording.
+- **Auto-paste** the transcript via `osascript` `key code 9 using command
+  down`. Cursor / VS Code accept this form (they ignore `keystroke "v"`).
+  Gated by Accessibility permission and the `autoPasteEnabled` setting.
 
 ## Native Modules and Universal macOS Builds
 
