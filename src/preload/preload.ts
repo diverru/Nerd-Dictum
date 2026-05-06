@@ -8,6 +8,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listWakeWordModels: () => ipcRenderer.invoke('list-wake-word-models'),
   openWakeWordFolder: () => ipcRenderer.invoke('open-wake-word-folder'),
   listGeminiModels: () => ipcRenderer.invoke('list-gemini-models'),
+  parakeetStatus: () => ipcRenderer.invoke('parakeet-status'),
+  parakeetLoadNow: () => ipcRenderer.invoke('parakeet-load-now'),
+  transcribeLocalStt: (wavBase64: string) => ipcRenderer.invoke('transcribe-local-stt', wavBase64),
+  onParakeetStatusChange: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => {
+    const listener = (_event: unknown, status: { state: string; error?: string; loadDurationMs?: number }) => callback(status);
+    ipcRenderer.on('parakeet-status-change', listener);
+    return () => {
+      ipcRenderer.removeListener('parakeet-status-change', listener);
+    };
+  },
   getApiKey: () => ipcRenderer.invoke('get-api-key'),
   getModel: () => ipcRenderer.invoke('get-model'),
   onToggleRecording: (callback: () => void) => {

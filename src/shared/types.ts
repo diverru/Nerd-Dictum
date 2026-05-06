@@ -37,6 +37,11 @@ export interface AppSettings {
   // submit hands-free. Only effective when the recording was started by the
   // wake-word detector (manual hold-key recordings always paste without Enter).
   wakeWordPressEnter: boolean;
+  // 'gemini' = audio → Gemini directly (default).
+  // 'local-then-gemini' = Parakeet TDT v3 (Swift+CoreML) for raw transcript,
+  //   then Gemini polishes with no audio attached. Avoids audio upload latency.
+  // 'local-only' = Parakeet alone, no LLM polish (zero network).
+  transcriptionMode: 'gemini' | 'local-then-gemini' | 'local-only';
 }
 
 export interface DailyStats {

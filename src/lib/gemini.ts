@@ -80,6 +80,10 @@ export interface TranscribeRequestOptions extends TranscribeOptions {
   mimeType?: string;
 }
 
+export interface PolishRequestOptions extends TranscribeOptions {
+  signal?: AbortSignal;
+}
+
 export class TranscriptionCancelledError extends Error {
   constructor() {
     super('Transcription cancelled');
@@ -497,4 +501,83 @@ export async function transcribeAudio(
 
   console.error('[Gemini] All attempts failed. Final error:', lastError);
   throw lastError || new Error('Transcription failed');
+}
+
+/**
+ * Build the polish prompt — used when a local ASR (Parakeet TDT v3) has
+ * already transcribed the audio and we just want Gemini to clean up the
+ * raw text. The prompt MUST forbid invention/expansion and be tolerant of
+ * the empty string passing straight through.
+ */
+function buildPolishPrompt(rawTranscript: string, options?: TranscribeOptions): string {
+  let prompt = `You are polishing a raw transcript produced by an offline speech-to-text model. Your job is to fix obvious recognition errors, restore punctuation, normalize casing of technical terms, and produce clean, readable text. You MUST NOT invent words, add commentary, change the meaning, or expand abbreviations the speaker did not say. If the raw transcript is empty or whitespace-only, return the empty string.
+
+CRITICAL — preserve original-language technical terms:
+- The speaker code-switches between Russian and English. English technical terms MUST stay in English Latin script. NEVER translate them to Russian and NEVER transliterate them in Cyrillic.
+- Common offline-STT failure mode: an English word spoken in a Russian sentence gets written in Cyrillic transliteration (e.g. "пекедж", "коммит", "реквест", "пуш", "рендер"). Detect these and restore the original English spelling: "package", "commit", "request", "push", "render".
+- Even more important: NEVER replace an English term with its Russian translation. If "package" was said, output "package", not "пакет". If "deploy" was said, output "deploy", not "развёртывание". The same applies to any code identifier, library name, CLI command, file path, or programming jargon — keep them in Latin script as the developer would type them.
+- Russian words and phrases stay in Russian. The rule is: original English → English; original Russian → Russian. Just fix obvious recognition errors within each language.
+
+`;
+
+  if (options?.languages && options.languages.length > 0) {
+    prompt += `Primary languages: ${options.languages.join(', ')}. The speaker may mix these.\n\n`;
+  }
+
+  const customKeywordsSection = buildCustomKeywordsSection(options?.customKeywords);
+  if (customKeywordsSection) {
+    prompt += customKeywordsSection + '\n';
+  }
+
+  if (options?.previousTranscripts && options.previousTranscripts.length > 0) {
+    const escapedTranscripts = options.previousTranscripts.map((t) =>
+      t.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    );
+    const orderedTranscripts = [...escapedTranscripts].reverse();
+    const transcriptsBlock = orderedTranscripts
+      .map((t, i) => `<transcript index="${i + 1}">\n${t}\n</transcript>`)
+      .join('\n');
+    prompt += `\n<previous_transcripts>\n${transcriptsBlock}\n</previous_transcripts>\n\nThe previous_transcripts block is REFERENCE ONLY for disambiguating recurring terms. Do not copy from it.\n`;
+  }
+
+  prompt += `\n<raw_transcript>\n${rawTranscript}\n</raw_transcript>\n\nOutput ONLY the polished transcript text. No commentary, no quotes, no XML.`;
+
+  return prompt;
+}
+
+export async function polishTranscript(
+  rawTranscript: string,
+  apiKey: string,
+  model: string = 'gemini-3-flash-preview',
+  options?: PolishRequestOptions,
+): Promise<string> {
+  if (rawTranscript.trim().length === 0) return '';
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const prompt = buildPolishPrompt(rawTranscript, options);
+
+  const requestBody = {
+    contents: [{ parts: [{ text: prompt }] }],
+    safetySettings: PERMISSIVE_SAFETY_SETTINGS,
+    generationConfig: {
+      temperature: 0,
+      topP: 1,
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+    signal: options?.signal,
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new ApiResponseError(`HTTP ${response.status}`, response.status, body);
+  }
+
+  const data: GeminiResponse = await response.json();
+  return extractTranscript(data);
 }
