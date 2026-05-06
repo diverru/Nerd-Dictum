@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import type { AppSettings, HoldToRecordKey } from '../../shared/types';
+import type { AppSettings, HoldToRecordKey, LLMProviderId, ProviderConfig } from '../../shared/types';
 
 // Hold-to-record key options
 const HOLD_TO_RECORD_KEYS: Array<{ value: HoldToRecordKey; label: string }> = [
@@ -151,12 +151,13 @@ export function SettingsPage() {
   const [wakeWordThreshold, setWakeWordThreshold] = useState(0.5);
   const [wakeWordPressEnter, setWakeWordPressEnter] = useState(true);
   const [transcriptionMode, setTranscriptionMode] = useState<'gemini' | 'local-then-gemini' | 'local-only'>('gemini');
+  const [polishProvider, setPolishProvider] = useState<LLMProviderId>('google');
+  const [providerConfigs, setProviderConfigs] = useState<Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>>({});
+  const [providerModelLists, setProviderModelLists] = useState<Partial<Record<LLMProviderId, Array<{ id: string; displayName: string }>>>>({});
+  const [providerModelsError, setProviderModelsError] = useState<Partial<Record<LLMProviderId, string>>>({});
+  const [isLoadingProviderModels, setIsLoadingProviderModels] = useState<Partial<Record<LLMProviderId, boolean>>>({});
   const [parakeetStatus, setParakeetStatus] = useState<{ state: string; error?: string; loadDurationMs?: number }>({ state: 'idle' });
   const [wakeWordModels, setWakeWordModels] = useState<Array<{ name: string; label: string; isBuiltin: boolean }>>([]);
-  const [geminiModels, setGeminiModels] = useState<Array<{ id: string; displayName: string; description: string }>>([]);
-  const [isLoadingModels, setIsLoadingModels] = useState(false);
-  const [modelsError, setModelsError] = useState('');
-  const [modelManualOverride, setModelManualOverride] = useState(false);
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [languageSearch, setLanguageSearch] = useState('');
@@ -194,6 +195,8 @@ export function SettingsPage() {
     wakeWordThreshold: number;
     wakeWordPressEnter: boolean;
     transcriptionMode: 'gemini' | 'local-then-gemini' | 'local-only';
+    polishProvider: LLMProviderId;
+    providerConfigs: Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>;
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -229,7 +232,9 @@ export function SettingsPage() {
       wakeWordKeyword !== initial.wakeWordKeyword ||
       wakeWordThreshold !== initial.wakeWordThreshold ||
       wakeWordPressEnter !== initial.wakeWordPressEnter ||
-      transcriptionMode !== initial.transcriptionMode
+      transcriptionMode !== initial.transcriptionMode ||
+      polishProvider !== initial.polishProvider ||
+      JSON.stringify(providerConfigs) !== JSON.stringify(initial.providerConfigs)
     );
   }, [
     apiKey,
@@ -255,6 +260,8 @@ export function SettingsPage() {
     wakeWordThreshold,
     wakeWordPressEnter,
     transcriptionMode,
+    polishProvider,
+    providerConfigs,
   ]);
 
   // Load audio devices
@@ -279,9 +286,12 @@ export function SettingsPage() {
     window.electronAPI.listGeminiModels?.().then((result) => {
       if (cancelled || !result) return;
       if (result.ok) {
-        setGeminiModels(result.models);
+        setProviderModelLists((prev) => ({
+          ...prev,
+          google: result.models.map((m) => ({ id: m.id, displayName: m.displayName })),
+        }));
       } else {
-        setModelsError(result.error || '');
+        setProviderModelsError((prev) => ({ ...prev, google: result.error || '' }));
       }
     });
     return () => {
@@ -353,6 +363,8 @@ export function SettingsPage() {
         const loadedWakeWordThreshold = settings.wakeWordThreshold ?? 0.5;
         const loadedWakeWordPressEnter = settings.wakeWordPressEnter ?? true;
         const loadedTranscriptionMode = (settings.transcriptionMode as 'gemini' | 'local-then-gemini' | 'local-only') || 'gemini';
+        const loadedPolishProvider = (settings.polishProvider as LLMProviderId) || 'google';
+        const loadedProviderConfigs = settings.providerConfigs || {};
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -377,6 +389,8 @@ export function SettingsPage() {
         setWakeWordThreshold(loadedWakeWordThreshold);
         setWakeWordPressEnter(loadedWakeWordPressEnter);
         setTranscriptionMode(loadedTranscriptionMode);
+        setPolishProvider(loadedPolishProvider);
+        setProviderConfigs(loadedProviderConfigs);
 
         // Store initial settings for unsaved changes comparison
         initialSettingsRef.current = {
@@ -403,6 +417,8 @@ export function SettingsPage() {
           wakeWordThreshold: loadedWakeWordThreshold,
           wakeWordPressEnter: loadedWakeWordPressEnter,
           transcriptionMode: loadedTranscriptionMode,
+          polishProvider: loadedPolishProvider,
+          providerConfigs: loadedProviderConfigs,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -499,6 +515,8 @@ export function SettingsPage() {
         wakeWordThreshold,
         wakeWordPressEnter,
         transcriptionMode,
+        polishProvider,
+        providerConfigs,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -526,6 +544,8 @@ export function SettingsPage() {
           wakeWordThreshold,
           wakeWordPressEnter,
           transcriptionMode,
+          polishProvider,
+          providerConfigs,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -708,91 +728,6 @@ export function SettingsPage() {
         {activeTab === 'general' && (
           <>
             <div className="settings-field">
-              <label htmlFor="api-key">Gemini API Key</label>
-              <input
-                id="api-key"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Enter your API key"
-                autoComplete="off"
-              />
-              <ApiKeyHelp />
-            </div>
-
-            <div className="settings-field">
-              <label htmlFor="model">Model</label>
-              {geminiModels.length > 0 && !modelManualOverride ? (
-                <select
-                  id="model"
-                  value={geminiModels.some((m) => m.id === model) ? model : '__custom__'}
-                  onChange={(e) => {
-                    if (e.target.value === '__custom__') {
-                      setModelManualOverride(true);
-                    } else {
-                      setModel(e.target.value);
-                    }
-                  }}
-                  className="settings-select"
-                >
-                  {geminiModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.id}
-                    </option>
-                  ))}
-                  <option value="__custom__">Custom (type model id)…</option>
-                </select>
-              ) : (
-                <input
-                  id="model"
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="gemini-3-flash-preview"
-                />
-              )}
-              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                <button
-                  type="button"
-                  className="settings-btn settings-btn-secondary"
-                  onClick={async () => {
-                    setIsLoadingModels(true);
-                    try {
-                      const result = await window.electronAPI.listGeminiModels?.();
-                      if (result?.ok) {
-                        setGeminiModels(result.models);
-                        setModelsError('');
-                      } else {
-                        setModelsError(result?.error || 'failed to fetch models');
-                      }
-                    } finally {
-                      setIsLoadingModels(false);
-                    }
-                  }}
-                  disabled={isLoadingModels}
-                >
-                  {isLoadingModels ? 'Loading…' : 'Refresh model list'}
-                </button>
-                {modelManualOverride && (
-                  <button
-                    type="button"
-                    className="settings-btn settings-btn-secondary"
-                    onClick={() => setModelManualOverride(false)}
-                  >
-                    Use dropdown
-                  </button>
-                )}
-              </div>
-              <span className="settings-hint">
-                {modelsError
-                  ? `List fetch error: ${modelsError}. Type the id manually.`
-                  : geminiModels.length === 0
-                    ? 'Set API key and click "Refresh model list" to populate the dropdown.'
-                    : `${geminiModels.length} models available. Default: gemini-3-flash-preview.`}
-              </span>
-            </div>
-
-            <div className="settings-field">
               <label htmlFor="transcriptionMode">Transcription mode</label>
               <select
                 id="transcriptionMode"
@@ -801,7 +736,7 @@ export function SettingsPage() {
                 className="settings-select"
               >
                 <option value="gemini">Gemini (audio → cloud)</option>
-                <option value="local-then-gemini">Local Parakeet + Gemini polish</option>
+                <option value="local-then-gemini">Local Parakeet + LLM polish</option>
                 <option value="local-only">Local Parakeet only (offline)</option>
               </select>
               <span className="settings-hint">
@@ -832,6 +767,152 @@ export function SettingsPage() {
                 </div>
               )}
             </div>
+
+            {transcriptionMode === 'local-then-gemini' && (
+              <div className="settings-field">
+                <label htmlFor="polishProvider">LLM provider</label>
+                <select
+                  id="polishProvider"
+                  value={polishProvider}
+                  onChange={(e) => setPolishProvider(e.target.value as LLMProviderId)}
+                  className="settings-select"
+                >
+                  <option value="google">Google (Gemini)</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="groq">Groq</option>
+                  <option value="deepseek">DeepSeek</option>
+                </select>
+                <span className="settings-hint">
+                  Which cloud model polishes the raw Parakeet transcript. Each provider keeps its own API key and model, persisted across switches.
+                </span>
+              </div>
+            )}
+
+            {transcriptionMode !== 'local-only' && (() => {
+              // Active provider drives the credentials block. In `gemini`
+              // mode it is forced to Google (audio→cloud requires Gemini);
+              // in `local-then-gemini` it follows the polish dropdown.
+              const activeProvider: LLMProviderId =
+                transcriptionMode === 'gemini' ? 'google' : polishProvider;
+              const isGoogle = activeProvider === 'google';
+              const activeKey = isGoogle
+                ? apiKey
+                : providerConfigs[activeProvider]?.apiKey ?? '';
+              const activeModel = isGoogle
+                ? model
+                : providerConfigs[activeProvider]?.model ?? '';
+              const updateActiveKey = (value: string) => {
+                if (isGoogle) {
+                  setApiKey(value);
+                } else {
+                  setProviderConfigs((prev) => ({
+                    ...prev,
+                    [activeProvider]: { apiKey: value, model: prev[activeProvider]?.model ?? '' },
+                  }));
+                }
+              };
+              const updateActiveModel = (value: string) => {
+                if (isGoogle) {
+                  setModel(value);
+                } else {
+                  setProviderConfigs((prev) => ({
+                    ...prev,
+                    [activeProvider]: { apiKey: prev[activeProvider]?.apiKey ?? '', model: value },
+                  }));
+                }
+              };
+              const models = providerModelLists[activeProvider] ?? [];
+              const error = providerModelsError[activeProvider];
+              const loading = isLoadingProviderModels[activeProvider] ?? false;
+              const refresh = async () => {
+                if (!activeKey) {
+                  setProviderModelsError((prev) => ({ ...prev, [activeProvider]: 'Enter API key first' }));
+                  return;
+                }
+                setIsLoadingProviderModels((prev) => ({ ...prev, [activeProvider]: true }));
+                setProviderModelsError((prev) => ({ ...prev, [activeProvider]: '' }));
+                try {
+                  const result = await window.electronAPI.listProviderModels?.(activeProvider, activeKey);
+                  if (result?.ok) {
+                    setProviderModelLists((prev) => ({ ...prev, [activeProvider]: result.models }));
+                  } else {
+                    setProviderModelsError((prev) => ({ ...prev, [activeProvider]: result?.error || 'fetch failed' }));
+                  }
+                } finally {
+                  setIsLoadingProviderModels((prev) => ({ ...prev, [activeProvider]: false }));
+                }
+              };
+              const providerLabel = ({
+                google: 'Google (Gemini)',
+                openai: 'OpenAI',
+                anthropic: 'Anthropic',
+                groq: 'Groq',
+                deepseek: 'DeepSeek',
+              } as Record<LLMProviderId, string>)[activeProvider];
+              return (
+                <>
+                  <div className="settings-field">
+                    <label htmlFor="active-api-key">{providerLabel} API key</label>
+                    <input
+                      id="active-api-key"
+                      type="password"
+                      value={activeKey}
+                      onChange={(e) => updateActiveKey(e.target.value)}
+                      placeholder={`Enter ${providerLabel} API key`}
+                      autoComplete="off"
+                    />
+                    {isGoogle && <ApiKeyHelp />}
+                  </div>
+
+                  <div className="settings-field">
+                    <label htmlFor="active-model">{providerLabel} model</label>
+                    {models.length > 0 ? (
+                      <select
+                        id="active-model"
+                        value={models.some((m) => m.id === activeModel) ? activeModel : '__custom__'}
+                        onChange={(e) => {
+                          if (e.target.value !== '__custom__') updateActiveModel(e.target.value);
+                        }}
+                        className="settings-select"
+                      >
+                        {models.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id}
+                          </option>
+                        ))}
+                        <option value="__custom__">Custom (type below)…</option>
+                      </select>
+                    ) : (
+                      <input
+                        id="active-model"
+                        type="text"
+                        value={activeModel}
+                        onChange={(e) => updateActiveModel(e.target.value)}
+                        placeholder="Model id"
+                      />
+                    )}
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                      <button
+                        type="button"
+                        className="settings-btn settings-btn-secondary"
+                        onClick={refresh}
+                        disabled={loading}
+                      >
+                        {loading ? 'Loading…' : 'Refresh model list'}
+                      </button>
+                    </div>
+                    <span className="settings-hint">
+                      {error
+                        ? `Fetch error: ${error}. Type the id manually.`
+                        : models.length === 0
+                          ? 'Enter the API key and click "Refresh model list".'
+                          : `${models.length} models available.`}
+                    </span>
+                  </div>
+                </>
+              );
+            })()}
 
             <div className="settings-field">
               <label className="checkbox-label">

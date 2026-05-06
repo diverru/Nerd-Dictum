@@ -123,7 +123,11 @@
     "wait-on": "^9.0.3"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.75",
+    "@ai-sdk/google": "^3.0.67",
+    "@ai-sdk/openai": "^3.0.61",
     "@picovoice/pvrecorder-node": "^1.2.8",
+    "ai": "^6.0.175",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.7.3",
     "onnxruntime-node": "^1.25.1",

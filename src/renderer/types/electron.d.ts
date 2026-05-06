@@ -18,6 +18,20 @@ export interface ElectronAPI {
     | { ok: true; models: Array<{ id: string; displayName: string; description: string }> }
     | { ok: false; error: string; models: [] }
   >;
+  listProviderModels?: (
+    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek',
+    apiKey: string,
+  ) => Promise<
+    | { ok: true; models: Array<{ id: string; displayName: string }> }
+    | { ok: false; error: string; models: [] }
+  >;
+  polishText?: (
+    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek',
+    apiKey: string,
+    model: string,
+    rawTranscript: string,
+    options?: { languages?: string[]; customKeywords?: string; previousTranscripts?: string[] },
+  ) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
   parakeetStatus?: () => Promise<{ state: 'idle' | 'starting' | 'ready' | 'failed'; error?: string; loadDurationMs?: number }>;
   parakeetLoadNow?: () => Promise<
     | { ok: true; status: { state: string; error?: string; loadDurationMs?: number } }

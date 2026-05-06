@@ -28,6 +28,8 @@ const defaultSettings: AppSettings = {
   wakeWordThreshold: 0.5,
   wakeWordPressEnter: true,
   transcriptionMode: 'gemini',
+  polishProvider: 'google',
+  providerConfigs: {},
 };
 
 const defaultStats: StatsWithDerived = {

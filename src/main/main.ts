@@ -14,6 +14,8 @@ import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from 
 import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
 import { startWakeWord, stopWakeWord, listAvailableModels as listWakeWordModels, customModelsDir as wakeWordCustomDir } from './wake-word';
 import { ParakeetService, type ParakeetStatus } from './parakeet-service';
+import { polishViaProvider, type PolishOptions } from '../lib/polish';
+import type { LLMProviderId } from '../shared/types';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -52,6 +54,36 @@ electronLog.transports.console.level = 'info';
 function log(...args: unknown[]): void {
   electronLog.info(...args);
 }
+
+// Wrap globalThis.fetch so we can see every outgoing HTTP call the AI SDK
+// (or any other library in main) makes — useful when polish is slow and we
+// want to know whether the SDK is retrying on 4xx/5xx behind our backs.
+// We only log calls to LLM endpoints so analytics/telemetry doesn't flood.
+const __origFetch = globalThis.fetch.bind(globalThis);
+let __fetchSeq = 0;
+const LLM_HOST_PATTERN = /(generativelanguage|api\.openai|api\.anthropic|api\.groq|api\.deepseek)\./i;
+const loggedFetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+  const url = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : (input as Request).url;
+  if (!LLM_HOST_PATTERN.test(url)) return __origFetch(input as RequestInfo | URL, init);
+  const seq = ++__fetchSeq;
+  const tStart = Date.now();
+  const method = init?.method || (input instanceof Request ? input.method : 'GET');
+  log(`[fetch#${seq}] → ${method} ${url}`);
+  try {
+    const response = await __origFetch(input as RequestInfo | URL, init);
+    log(`[fetch#${seq}] ← ${response.status} ttfb=${Date.now() - tStart}ms`);
+    return response;
+  } catch (err) {
+    log(`[fetch#${seq}] ✗ in ${Date.now() - tStart}ms: ${(err as Error).message}`);
+    throw err;
+  }
+}) as typeof fetch;
+loggedFetch.preconnect = __origFetch.preconnect?.bind(__origFetch) ?? (() => {});
+globalThis.fetch = loggedFetch;
 
 // Track original volume level before recording
 let savedVolume: number | null = null;
@@ -134,6 +166,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   wakeWordThreshold: 0.5,
   wakeWordPressEnter: true,
   transcriptionMode: 'gemini',
+  polishProvider: 'google',
+  providerConfigs: {},
 };
 
 function getSettingsPath(): string {
@@ -1330,7 +1364,7 @@ app.on('activate', () => {
 
 // IPC handlers
 ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pressEnterAfter = false) => {
-  log('[Clipboard] Copying transcript (' + text.length + ' chars):', text.substring(0, 200));
+  log('[Clipboard] Copying transcript (' + text.length + ' chars):', text);
   const willAutoPaste = autoPaste && appSettings.autoPasteEnabled;
   // Take a snapshot only when we're about to auto-paste; otherwise the
   // transcript is supposed to stay in the clipboard for manual paste.
@@ -1405,7 +1439,7 @@ function pasteIntoActiveWindow(pressEnterAfter = false, restoreSnapshotEntry: Cl
     setTimeout(() => {
       const clipNow = clipboard.readText();
       log(
-        `[AutoPaste] pre-keystroke: clipboard.length=${clipNow.length} clipboard.head="${clipNow.substring(0, 60).replace(/\n/g, ' ')}"`
+        `[AutoPaste] pre-keystroke: clipboard.length=${clipNow.length} clipboard="${clipNow.replace(/\n/g, '\\n')}"`
       );
       exec(
         `osascript -e 'tell application "System Events" to set frontApp to name of first application process whose frontmost is true' -e 'return frontApp'`,
@@ -1515,43 +1549,105 @@ ipcMain.handle('open-wake-word-folder', () => {
 
 ipcMain.handle('list-gemini-models', async () => {
   const apiKey = appSettings.apiKey || process.env.GEMINI_API_KEY || '';
+  return fetchProviderModels('google', apiKey);
+});
+
+ipcMain.handle('list-provider-models', async (_event, provider: LLMProviderId, apiKey: string) => {
+  return fetchProviderModels(provider, apiKey);
+});
+
+ipcMain.handle('polish-text', async (
+  _event,
+  provider: LLMProviderId,
+  apiKey: string,
+  model: string,
+  rawTranscript: string,
+  options?: PolishOptions,
+) => {
+  const t0 = Date.now();
+  log(`[Polish/${provider}] start model=${model} rawLen=${rawTranscript.length}ch`);
+  try {
+    const text = await polishViaProvider({ provider, apiKey, model, rawTranscript, options });
+    log(`[Polish/${provider}] ok in ${Date.now() - t0}ms outLen=${text.length}ch out="${text.replace(/\n/g, '\\n')}"`);
+    return { ok: true as const, text };
+  } catch (error) {
+    const err = error as Error;
+    log(`[Polish/${provider}] FAILED in ${Date.now() - t0}ms: ${err.message}`);
+    return { ok: false as const, error: err.message };
+  }
+});
+
+interface ProviderModel {
+  id: string;
+  displayName: string;
+}
+
+type ProviderModelsResult =
+  | { ok: true; models: ProviderModel[] }
+  | { ok: false; error: string; models: [] };
+
+async function fetchProviderModels(provider: LLMProviderId, apiKey: string): Promise<ProviderModelsResult> {
   if (!apiKey) {
     return { ok: false, error: 'API key not set', models: [] };
   }
   try {
+    const result = await fetchProviderModelsImpl(provider, apiKey);
+    log(`[Models/${provider}] fetched ${result.length} models`);
+    return { ok: true, models: result };
+  } catch (error) {
+    const err = error as Error;
+    log(`[Models/${provider}] fetch failed: ${err.message}`);
+    return { ok: false, error: err.message, models: [] };
+  }
+}
+
+async function fetchProviderModelsImpl(provider: LLMProviderId, apiKey: string): Promise<ProviderModel[]> {
+  if (provider === 'google') {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`;
     const response = await fetch(url);
-    if (!response.ok) {
-      return { ok: false, error: `HTTP ${response.status}`, models: [] };
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = (await response.json()) as {
-      models?: Array<{
-        name?: string;
-        displayName?: string;
-        description?: string;
-        supportedGenerationMethods?: string[];
-      }>;
+      models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }>;
     };
-    const models = (data.models || [])
+    return (data.models || [])
       .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
       .map((m) => {
         const id = (m.name || '').replace(/^models\//, '');
-        return {
-          id,
-          displayName: m.displayName || id,
-          description: m.description || '',
-        };
+        return { id, displayName: m.displayName || id };
       })
       .filter((m) => m.id.startsWith('gemini-'))
       .sort((a, b) => a.id.localeCompare(b.id));
-    log(`[Models] fetched ${models.length} Gemini models`);
-    return { ok: true, models };
-  } catch (error) {
-    const err = error as Error;
-    log(`[Models] fetch failed: ${err.message}`);
-    return { ok: false, error: err.message, models: [] };
   }
-});
+
+  if (provider === 'anthropic') {
+    const response = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = (await response.json()) as { data?: Array<{ id: string; display_name?: string }> };
+    return (data.data || [])
+      .map((m) => ({ id: m.id, displayName: m.display_name || m.id }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  // openai / groq / deepseek share the OpenAI-compatible endpoint shape.
+  const baseUrl = OPENAI_COMPAT_BASE_URLS[provider];
+  if (!baseUrl) throw new Error(`Unknown provider: ${provider}`);
+  const response = await fetch(`${baseUrl}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const data = (await response.json()) as { data?: Array<{ id: string }> };
+  return (data.data || [])
+    .map((m) => ({ id: m.id, displayName: m.id }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+const OPENAI_COMPAT_BASE_URLS: Record<Exclude<LLMProviderId, 'google' | 'anthropic'>, string> = {
+  openai: 'https://api.openai.com/v1',
+  groq: 'https://api.groq.com/openai/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+};
 
 // API key: prefer saved settings, fallback to env var
 ipcMain.handle('get-api-key', () => {
@@ -1590,6 +1686,8 @@ ipcMain.handle('get-settings', () => {
     wakeWordThreshold: appSettings.wakeWordThreshold,
     wakeWordPressEnter: appSettings.wakeWordPressEnter,
     transcriptionMode: appSettings.transcriptionMode,
+    polishProvider: appSettings.polishProvider,
+    providerConfigs: appSettings.providerConfigs,
   };
 });
 

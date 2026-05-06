@@ -8,6 +8,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listWakeWordModels: () => ipcRenderer.invoke('list-wake-word-models'),
   openWakeWordFolder: () => ipcRenderer.invoke('open-wake-word-folder'),
   listGeminiModels: () => ipcRenderer.invoke('list-gemini-models'),
+  listProviderModels: (provider: string, apiKey: string) =>
+    ipcRenderer.invoke('list-provider-models', provider, apiKey),
+  polishText: (
+    provider: string,
+    apiKey: string,
+    model: string,
+    rawTranscript: string,
+    options?: { languages?: string[]; customKeywords?: string; previousTranscripts?: string[] },
+  ) => ipcRenderer.invoke('polish-text', provider, apiKey, model, rawTranscript, options),
   parakeetStatus: () => ipcRenderer.invoke('parakeet-status'),
   parakeetLoadNow: () => ipcRenderer.invoke('parakeet-load-now'),
   transcribeLocalStt: (wavBase64: string) => ipcRenderer.invoke('transcribe-local-stt', wavBase64),

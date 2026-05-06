@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import './styles/App.css';
 import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS } from '../lib/audio';
-import { transcribeAudio, polishTranscript, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
+import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
 import { classifyError, ClassifiedError } from '../lib/errors';
 import { playSuccessSound, playErrorSound } from '../lib/sounds';
 import { SettingsButton } from './components/Settings';
@@ -191,8 +191,19 @@ export function App() {
         return;
       }
 
-      // local-only doesn't talk to any LLM, so the API key isn't required.
-      if (!settings.apiKey && settings.transcriptionMode !== 'local-only') {
+      // local-only doesn't talk to any LLM, so no API key is required. For
+      // `local-then-gemini` the relevant key is the *polish* provider's key
+      // (which may be Gemini, OpenAI, Anthropic, …); for direct `gemini`
+      // mode it's the Gemini key. We only check that *some* key the
+      // upcoming pipeline needs exists.
+      const polishProvider = settings.polishProvider || 'google';
+      const polishKeyForMode =
+        settings.transcriptionMode === 'local-then-gemini'
+          ? (polishProvider === 'google'
+              ? settings.apiKey
+              : settings.providerConfigs?.[polishProvider]?.apiKey ?? '')
+          : settings.apiKey;
+      if (!polishKeyForMode && settings.transcriptionMode !== 'local-only') {
         showMessage('Set API key in settings', 'error', true);
         window.electronAPI.openSettingsWindow();
         // Save audio for retry after setting API key
@@ -226,12 +237,35 @@ export function App() {
         if (settings.transcriptionMode === 'local-only') {
           transcript = localResult.text;
         } else {
-          transcript = await polishTranscript(
+          // Polish via the user-selected provider (default: google).
+          const provider = settings.polishProvider || 'google';
+          const polishConfig = provider === 'google'
+            ? { apiKey: settings.apiKey, model: settings.model }
+            : settings.providerConfigs?.[provider] ?? { apiKey: '', model: '' };
+          if (!polishConfig.apiKey) {
+            throw new Error(`Polish provider "${provider}" has no API key set`);
+          }
+          if (!polishConfig.model) {
+            throw new Error(`Polish provider "${provider}" has no model selected`);
+          }
+          if (!window.electronAPI.polishText) {
+            throw new Error('Polish IPC not available');
+          }
+          const polishResult = await window.electronAPI.polishText(
+            provider,
+            polishConfig.apiKey,
+            polishConfig.model,
             localResult.text,
-            settings.apiKey,
-            settings.model,
-            { ...options, signal: controller.signal },
+            {
+              languages: options.languages,
+              customKeywords: options.customKeywords,
+              previousTranscripts: options.previousTranscripts,
+            },
           );
+          if (!polishResult.ok) {
+            throw new Error(`Polish failed: ${polishResult.error}`);
+          }
+          transcript = polishResult.text;
         }
       } else {
         transcript = await transcribeAudio(audioBase64, settings.apiKey, settings.model, {

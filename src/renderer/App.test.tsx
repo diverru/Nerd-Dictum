@@ -80,6 +80,8 @@ const defaultSettings = {
   wakeWordThreshold: 0.5,
   wakeWordPressEnter: true,
   transcriptionMode: 'gemini' as const,
+  polishProvider: 'google' as const,
+  providerConfigs: {},
 };
 
 /**
