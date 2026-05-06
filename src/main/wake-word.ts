@@ -350,11 +350,18 @@ async function runDetectionLoop(
 
     const now = Date.now();
     if (now - lastHeartbeat > 5000) {
-      const avgRms = framesSinceHeartbeat > 0 ? sumAudioRms / framesSinceHeartbeat : 0;
-      log(
-        `[WakeWord] heartbeat: peakProb=${topProb.toFixed(3)}, framesAbove50%=${aboveThresholdCount}, ` +
-          `audioPeak=${peakAudioAbs}, audioRms=${avgRms.toFixed(0)}, mel=${melBuffer.length}/${MEL_BUFFER_MAX}, emb=${embBuffer.length}/${EMB_BUFFER_MAX}`
-      );
+      // Only log when peakProb cleared a sane noise floor — there's no signal
+      // in dumping a heartbeat every 5 s when the room is quiet. The floor is
+      // the lower of the user's detection threshold and a hard 0.05 minimum,
+      // so an aggressively low threshold still gets observable logs.
+      const heartbeatFloor = Math.min(threshold, 0.05);
+      if (topProb >= heartbeatFloor) {
+        const avgRms = framesSinceHeartbeat > 0 ? sumAudioRms / framesSinceHeartbeat : 0;
+        log(
+          `[WakeWord] heartbeat: peakProb=${topProb.toFixed(3)}, framesAbove50%=${aboveThresholdCount}, ` +
+            `audioPeak=${peakAudioAbs}, audioRms=${avgRms.toFixed(0)}, mel=${melBuffer.length}/${MEL_BUFFER_MAX}, emb=${embBuffer.length}/${EMB_BUFFER_MAX}`
+        );
+      }
       topProb = 0;
       peakAudioAbs = 0;
       sumAudioRms = 0;
