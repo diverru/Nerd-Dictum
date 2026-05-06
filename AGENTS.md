@@ -153,6 +153,11 @@ Gemini-direct dictation:
 - **Wake-word** (`src/main/wake-word.ts`) via `onnxruntime-node` +
   `@picovoice/pvrecorder-node`, using openWakeWord ONNX models bundled in
   `assets/wake-word/`. Custom keywords drop into `<userData>/wake-words/`.
+- **Anti-hallucination**: silence-handling rule sandwiched at top and
+  bottom of the prompt; min 1 s recording duration; the renderer drops
+  results that exactly echo a recent transcript or a single keyword from
+  the correction dictionary. Gemini `generationConfig` is pinned to
+  greedy/deterministic decoding.
 
 ## Native Modules and Universal macOS Builds
 

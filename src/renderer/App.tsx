@@ -14,6 +14,37 @@ import type { AppSettings } from './types/electron';
 const MESSAGE_TIMEOUT_MS = 2000;
 const RETRY_MESSAGE_TIMEOUT_MS = 4000;
 const SUCCESS_STATE_TIMEOUT_MS = 5000;
+// Recordings shorter than this are treated as no-speech without round-tripping
+// to Gemini — prevents the model from hallucinating a transcript out of very
+// short / mostly-silent audio.
+const MIN_TRANSCRIBE_DURATION_MS = 1000;
+// Keywords baked into the default prompt — used by the renderer to detect
+// when Gemini hallucinated one of them as the whole transcript for silent audio.
+const DEFAULT_KEYWORD_TERMS = ['CLAUDE.md', 'Cloud MD', 'WIX', 'vix'];
+
+function collectKeywordTerms(customKeywords: string | undefined): string[] {
+  const terms = new Set<string>(DEFAULT_KEYWORD_TERMS);
+  if (customKeywords) {
+    for (const rawLine of customKeywords.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const delimiterMatch = line.match(/(=>|->|=)/);
+      if (!delimiterMatch || delimiterMatch.index === undefined) {
+        terms.add(line);
+        continue;
+      }
+      const left = line.slice(0, delimiterMatch.index).trim();
+      const right = line.slice(delimiterMatch.index + delimiterMatch[0].length).trim();
+      if (left) terms.add(left);
+      if (right) {
+        for (const alias of right.split(/[,;|]/).map((a) => a.trim()).filter(Boolean)) {
+          terms.add(alias);
+        }
+      }
+    }
+  }
+  return [...terms];
+}
 
 // Audio level smoothing
 const AUDIO_LEVEL_LERP_UP = 0.8;   // Very fast rise
@@ -180,6 +211,41 @@ export function App() {
 
       console.log('[Transcript]', transcript);
 
+      const trimmed = transcript.trim();
+      // Treat as "no speech" when one of these holds:
+      //   1. Truly empty / whitespace.
+      //   2. Echoes a recent transcript verbatim — silent audio + a
+      //      previous_transcripts context block makes Gemini fall back to
+      //      repeating one of them.
+      //   3. Hallucinated a single keyword from the prompt's correction
+      //      dictionary — model picks a term it saw in the prompt when
+      //      there's nothing to transcribe.
+      const echoesPrevious = trimmed.length > 0 && previousTranscripts.some(
+        (prev) => prev.trim() === trimmed
+      );
+      const keywordTerms = collectKeywordTerms(settings.customKeywords);
+      const echoesKeyword = trimmed.length > 0 && keywordTerms.some(
+        (term) => term.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (trimmed.length === 0 || echoesPrevious || echoesKeyword) {
+        if (echoesPrevious || echoesKeyword) {
+          console.warn(
+            `[Transcribe] Treating as empty (likely hallucination). echoesPrevious=${echoesPrevious}, echoesKeyword=${echoesKeyword}, value="${trimmed}"`
+          );
+        }
+        showMessage('No speech detected', 'error', false);
+        window.electronAPI.trackEvent('transcription_empty', {
+          echoed_previous: echoesPrevious ? 1 : 0,
+          echoed_keyword: echoesKeyword ? 1 : 0,
+        });
+        if (soundEnabled) {
+          playErrorSound();
+        }
+        lastAudioRef.current = null;
+        setState('idle');
+        return;
+      }
+
       // Copy to clipboard
       // autoPaste=true: dispatch ⌘V into the focused window so the
       // transcript appears at the cursor without keyboard interaction.
@@ -275,6 +341,17 @@ export function App() {
       window.electronAPI.trackEvent('recording_stop', { duration_ms: recordingDuration });
       // Resume media playback immediately after recording stops (before transcription)
       window.electronAPI.resumeMedia();
+
+      // Don't even round-trip to Gemini for tiny recordings — they're almost
+      // always accidental key dribbles or silence and the model loves to
+      // hallucinate something out of <1s of audio.
+      if (recordingDuration < MIN_TRANSCRIBE_DURATION_MS) {
+        console.log(`[Recording] Skipping transcription, duration ${recordingDuration}ms < ${MIN_TRANSCRIBE_DURATION_MS}ms`);
+        window.electronAPI.trackEvent('recording_too_short', { duration_ms: recordingDuration });
+        setState('idle');
+        return;
+      }
+
       await transcribeWithRetry(audioBase64);
     } catch (error) {
       // Recording stop error (too short, etc.)

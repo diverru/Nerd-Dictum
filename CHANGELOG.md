@@ -14,6 +14,8 @@
 
 [2026-05-06] Voice UX — Always-listening wake-word detection via openWakeWord ONNX models (`onnxruntime-node` + `@picovoice/pvrecorder-node`). Built-in keywords: alexa, hey_jarvis, hey_mycroft. Drop additional `.onnx` models into `<userData>/wake-words/`. Threshold + keyword + enable toggle in Settings.
 
+[2026-05-06] Quality — Anti-hallucination guards. Recordings under 1 s are skipped without round-tripping to Gemini; transcripts that come back empty, that exactly echo a recent transcript, or that match a single keyword from the correction dictionary are dropped. The prompt now sandwiches a "silence handling" rule and reframes `previous_transcripts` as reference-only. `generationConfig` pinned to `temperature=0`, `topP=1`, `thinkingBudget=0`.
+
 ## 2026-04-22
 
 [2026-04-22] Bug — Fix `PROHIBITED_CONTENT` safety-filter false positives from Gemini: on safety block, automatically flush the `<previous_transcripts>` context and retry the request once without it before surfacing the error
