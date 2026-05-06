@@ -1255,6 +1255,14 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string) => {
   return true;
 });
 
+// Forward arbitrary log lines from the renderer process into the unified
+// main-process log (~/Library/Logs/Nerd Dictum/main.log) so timing /
+// diagnostic messages from the React side land in the same place as the
+// rest of the app's diagnostics.
+ipcMain.on('renderer-log', (_event, message: string) => {
+  log('[Renderer]', message);
+});
+
 // API key: prefer saved settings, fallback to env var
 ipcMain.handle('get-api-key', () => {
   return appSettings.apiKey || process.env.GEMINI_API_KEY || '';

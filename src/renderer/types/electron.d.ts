@@ -11,6 +11,7 @@ export interface ErrorDetail {
 
 export interface ElectronAPI {
   copyToClipboard: (text: string) => Promise<boolean>;
+  log?: (message: string) => void;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;
   onToggleRecording: (callback: () => void) => () => void;
