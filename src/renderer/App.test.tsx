@@ -79,6 +79,7 @@ const defaultSettings = {
   wakeWordKeyword: 'hey_jarvis' as const,
   wakeWordThreshold: 0.5,
   wakeWordPressEnter: true,
+  transcriptionMode: 'gemini' as const,
 };
 
 /**

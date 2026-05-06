@@ -18,6 +18,16 @@ export interface ElectronAPI {
     | { ok: true; models: Array<{ id: string; displayName: string; description: string }> }
     | { ok: false; error: string; models: [] }
   >;
+  parakeetStatus?: () => Promise<{ state: 'idle' | 'starting' | 'ready' | 'failed'; error?: string; loadDurationMs?: number }>;
+  parakeetLoadNow?: () => Promise<
+    | { ok: true; status: { state: string; error?: string; loadDurationMs?: number } }
+    | { ok: false; error: string; status: { state: string; error?: string; loadDurationMs?: number } }
+  >;
+  transcribeLocalStt?: (wavBase64: string) => Promise<
+    | { ok: true; text: string; elapsedMs: number }
+    | { ok: false; error: string }
+  >;
+  onParakeetStatusChange?: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => () => void;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;
   onToggleRecording: (callback: () => void) => () => void;

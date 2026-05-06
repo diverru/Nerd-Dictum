@@ -13,6 +13,7 @@ import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts } f
 import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from './stats';
 import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
 import { startWakeWord, stopWakeWord, listAvailableModels as listWakeWordModels, customModelsDir as wakeWordCustomDir } from './wake-word';
+import { ParakeetService, type ParakeetStatus } from './parakeet-service';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -132,6 +133,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   wakeWordKeyword: 'hey_jarvis',
   wakeWordThreshold: 0.5,
   wakeWordPressEnter: true,
+  transcriptionMode: 'gemini',
 };
 
 function getSettingsPath(): string {
@@ -173,6 +175,13 @@ function saveSettings(settings: AppSettings): boolean {
 }
 
 let appSettings: AppSettings = DEFAULT_SETTINGS;
+
+const parakeetService = new ParakeetService(log);
+parakeetService.onStatusChange((status: ParakeetStatus) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('parakeet-status-change', status);
+  }
+});
 
 // Window position persistence
 function getWindowPositionPath(): string {
@@ -1254,6 +1263,18 @@ app.whenReady().then(() => {
   registerGlobalShortcuts();
   void setupWakeWord();
 
+  // Warm-load Parakeet at startup when the user has selected a local mode —
+  // model load is ~10s on M-series Macs and we'd rather pay it once at boot
+  // than during the first transcription.
+  if (
+    appSettings.transcriptionMode === 'local-then-gemini' ||
+    appSettings.transcriptionMode === 'local-only'
+  ) {
+    parakeetService.ensureStarted().catch((err) => {
+      log(`[Parakeet] startup warm-load failed: ${(err as Error).message}`);
+    });
+  }
+
   // Hide widget if it was permanently hidden in settings
   if (appSettings.widgetHidden && mainWindow) {
     mainWindow.hide();
@@ -1289,6 +1310,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopKeyboardHook();
   void stopWakeWord();
+  void parakeetService.stop();
   stopHeartbeat();
   if (tray) {
     tray.destroy();
@@ -1417,6 +1439,45 @@ ipcMain.handle('list-wake-word-models', () => {
   return listWakeWordModels();
 });
 
+ipcMain.handle('parakeet-status', () => {
+  return parakeetService.getStatus();
+});
+
+ipcMain.handle('parakeet-load-now', async () => {
+  try {
+    await parakeetService.ensureStarted();
+    return { ok: true as const, status: parakeetService.getStatus() };
+  } catch (error) {
+    const err = error as Error;
+    log(`[Parakeet] manual load failed: ${err.message}`);
+    return { ok: false as const, error: err.message, status: parakeetService.getStatus() };
+  }
+});
+
+ipcMain.handle('transcribe-local-stt', async (_event, wavBase64: string) => {
+  try {
+    // Parakeet wants a real path. Drop the WAV in a temp file, transcribe, unlink.
+    const tmpDir = app.getPath('temp');
+    const tmpPath = path.join(tmpDir, `nerd-dictum-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
+    const buffer = Buffer.from(wavBase64, 'base64');
+    fs.writeFileSync(tmpPath, buffer);
+    try {
+      const result = await parakeetService.transcribe({ wavPath: tmpPath });
+      return { ok: true as const, text: result.text, elapsedMs: result.elapsedMs };
+    } finally {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        // Best effort — leftover temp files self-clean on macOS reboot.
+      }
+    }
+  } catch (error) {
+    const err = error as Error;
+    log(`[Parakeet] transcribe failed: ${err.message}`);
+    return { ok: false as const, error: err.message };
+  }
+});
+
 ipcMain.handle('open-wake-word-folder', () => {
   const dir = wakeWordCustomDir();
   shell.openPath(dir);
@@ -1499,6 +1560,7 @@ ipcMain.handle('get-settings', () => {
     wakeWordKeyword: appSettings.wakeWordKeyword,
     wakeWordThreshold: appSettings.wakeWordThreshold,
     wakeWordPressEnter: appSettings.wakeWordPressEnter,
+    transcriptionMode: appSettings.transcriptionMode,
   };
 });
 

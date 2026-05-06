@@ -150,6 +150,8 @@ export function SettingsPage() {
   const [wakeWordKeyword, setWakeWordKeyword] = useState<string>('hey_jarvis');
   const [wakeWordThreshold, setWakeWordThreshold] = useState(0.5);
   const [wakeWordPressEnter, setWakeWordPressEnter] = useState(true);
+  const [transcriptionMode, setTranscriptionMode] = useState<'gemini' | 'local-then-gemini' | 'local-only'>('gemini');
+  const [parakeetStatus, setParakeetStatus] = useState<{ state: string; error?: string; loadDurationMs?: number }>({ state: 'idle' });
   const [wakeWordModels, setWakeWordModels] = useState<Array<{ name: string; label: string; isBuiltin: boolean }>>([]);
   const [geminiModels, setGeminiModels] = useState<Array<{ id: string; displayName: string; description: string }>>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -191,6 +193,7 @@ export function SettingsPage() {
     wakeWordKeyword: string;
     wakeWordThreshold: number;
     wakeWordPressEnter: boolean;
+    transcriptionMode: 'gemini' | 'local-then-gemini' | 'local-only';
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -225,7 +228,8 @@ export function SettingsPage() {
       wakeWordEnabled !== initial.wakeWordEnabled ||
       wakeWordKeyword !== initial.wakeWordKeyword ||
       wakeWordThreshold !== initial.wakeWordThreshold ||
-      wakeWordPressEnter !== initial.wakeWordPressEnter
+      wakeWordPressEnter !== initial.wakeWordPressEnter ||
+      transcriptionMode !== initial.transcriptionMode
     );
   }, [
     apiKey,
@@ -250,6 +254,7 @@ export function SettingsPage() {
     wakeWordKeyword,
     wakeWordThreshold,
     wakeWordPressEnter,
+    transcriptionMode,
   ]);
 
   // Load audio devices
@@ -281,6 +286,20 @@ export function SettingsPage() {
     });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Subscribe to Parakeet load/transcribe state changes so the UI reflects
+  // live progress (idle → starting → ready / failed).
+  useEffect(() => {
+    void window.electronAPI.parakeetStatus?.().then((status) => {
+      if (status) setParakeetStatus(status);
+    });
+    const unsubscribe = window.electronAPI.onParakeetStatusChange?.((status) => {
+      setParakeetStatus(status);
+    });
+    return () => {
+      unsubscribe?.();
     };
   }, []);
 
@@ -333,6 +352,7 @@ export function SettingsPage() {
         const loadedWakeWordKeyword = settings.wakeWordKeyword || 'hey_jarvis';
         const loadedWakeWordThreshold = settings.wakeWordThreshold ?? 0.5;
         const loadedWakeWordPressEnter = settings.wakeWordPressEnter ?? true;
+        const loadedTranscriptionMode = (settings.transcriptionMode as 'gemini' | 'local-then-gemini' | 'local-only') || 'gemini';
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -356,6 +376,7 @@ export function SettingsPage() {
         setWakeWordKeyword(loadedWakeWordKeyword);
         setWakeWordThreshold(loadedWakeWordThreshold);
         setWakeWordPressEnter(loadedWakeWordPressEnter);
+        setTranscriptionMode(loadedTranscriptionMode);
 
         // Store initial settings for unsaved changes comparison
         initialSettingsRef.current = {
@@ -381,6 +402,7 @@ export function SettingsPage() {
           wakeWordKeyword: loadedWakeWordKeyword,
           wakeWordThreshold: loadedWakeWordThreshold,
           wakeWordPressEnter: loadedWakeWordPressEnter,
+          transcriptionMode: loadedTranscriptionMode,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -476,6 +498,7 @@ export function SettingsPage() {
         wakeWordKeyword,
         wakeWordThreshold,
         wakeWordPressEnter,
+        transcriptionMode,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -502,6 +525,7 @@ export function SettingsPage() {
           wakeWordKeyword,
           wakeWordThreshold,
           wakeWordPressEnter,
+          transcriptionMode,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -766,6 +790,47 @@ export function SettingsPage() {
                     ? 'Set API key and click "Refresh model list" to populate the dropdown.'
                     : `${geminiModels.length} models available. Default: gemini-3-flash-preview.`}
               </span>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="transcriptionMode">Transcription mode</label>
+              <select
+                id="transcriptionMode"
+                value={transcriptionMode}
+                onChange={(e) => setTranscriptionMode(e.target.value as 'gemini' | 'local-then-gemini' | 'local-only')}
+                className="settings-select"
+              >
+                <option value="gemini">Gemini (audio → cloud)</option>
+                <option value="local-then-gemini">Local Parakeet + Gemini polish</option>
+                <option value="local-only">Local Parakeet only (offline)</option>
+              </select>
+              <span className="settings-hint">
+                Local modes use the bundled Parakeet TDT v3 (Swift + CoreML, ANE-accelerated). First load takes ~10s; the model stays warm afterwards. macOS only.
+              </span>
+              {(transcriptionMode === 'local-then-gemini' || transcriptionMode === 'local-only') && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 12, opacity: 0.85 }}>
+                    Parakeet status: <strong>{parakeetStatus.state}</strong>
+                    {parakeetStatus.loadDurationMs !== undefined && parakeetStatus.state === 'ready'
+                      ? ` (loaded in ${(parakeetStatus.loadDurationMs / 1000).toFixed(1)}s)`
+                      : ''}
+                    {parakeetStatus.error ? ` — ${parakeetStatus.error}` : ''}
+                  </div>
+                  {parakeetStatus.state !== 'ready' && parakeetStatus.state !== 'starting' && (
+                    <button
+                      type="button"
+                      className="settings-btn settings-btn-secondary"
+                      style={{ marginTop: 6 }}
+                      onClick={async () => {
+                        const result = await window.electronAPI.parakeetLoadNow?.();
+                        if (result?.status) setParakeetStatus(result.status);
+                      }}
+                    >
+                      Load now
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="settings-field">

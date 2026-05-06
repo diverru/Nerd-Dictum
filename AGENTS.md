@@ -162,6 +162,40 @@ Gemini-direct dictation:
   chains V + Enter in a single AppleScript with a 250 ms delay between
   them so V always lands first. Toggle: `wakeWordPressEnter`.
 
+## Local STT (Parakeet TDT v3)
+
+- **Mode** picker in Settings → Advanced (`transcriptionMode`):
+  - `gemini` (default): audio → Gemini direct, as upstream.
+  - `local-then-gemini`: Parakeet recognises locally, Gemini polishes the
+    text. The polish prompt forbids invention and keeps original-language
+    technical terms in their original script (no `package` → `пакет`, no
+    Cyrillic transliterations like `пекедж`).
+  - `local-only`: fully offline, no API key, no LLM round-trip. The raw
+    Parakeet transcript is returned verbatim.
+- **Backend**: macOS-only Swift CLI (`swift/Sources/parakeet-bridge/main.swift`)
+  built with `swift build -c release`. Uses the `FluidAudio` package which
+  loads CoreML models compiled for the Apple Neural Engine — ~100× real-time
+  on M-series Macs, vs ~7× for ONNX-on-CPU.
+- **Lifecycle**: `src/main/parakeet-service.ts` lazy-spawns the daemon on
+  first transcribe (~10 s cold), warm inferences land in 50–500 ms.
+  Long-running child process speaks line-delimited JSON over stdin/stdout.
+  Status (`idle` / `starting` / `ready` / `failed` + `loadDurationMs`) is
+  pushed to renderer windows via `parakeet-status-change`. Settings →
+  Advanced shows live status and a "Load now" button that calls
+  `parakeet-load-now` to pre-warm.
+
+## Build pipeline
+
+`bun run build:swift` (and any of `dev`, `build`, `dev:mac:build`) calls
+`scripts/build-swift.ts`, which invokes `swift build -c release` inside
+`swift/`. On non-macOS platforms or without a Swift toolchain the script
+silently no-ops — local STT is then unavailable but everything else still
+builds.
+
+The build artefact `swift/.build/release/parakeet-bridge` is bundled by
+electron-builder via `extraResources` to `Resources/bin/parakeet-bridge`
+in the packaged app.
+
 ## Native Modules and Universal macOS Builds
 
 `uiohook-napi`, `onnxruntime-node`, and `@picovoice/pvrecorder-node` ship
@@ -169,3 +203,7 @@ prebuilds for one architecture per file. The universal-merge step in
 electron-builder is configured to keep both arches via the
 `singleArchFiles`/`x64ArchFiles` glob in `package.json`. When adding a new
 native module touch that glob too.
+
+The Swift `parakeet-bridge` binary is built for the host arch only;
+shipping a true universal release would need a `swift build` per arch
+plus `lipo`. We currently ship the host arch.

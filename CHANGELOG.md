@@ -20,6 +20,8 @@
 
 [2026-05-06] Voice UX — Hands-free Enter after wake-word auto-paste. A wake-word-triggered transcription pastes ⌘V then Enter, chained inside a single osascript with a 250 ms delay between them so V always lands first. Manual hold-to-record recordings paste without Enter. Toggle: `wakeWordPressEnter`.
 
+[2026-05-06] STT — Local Parakeet TDT v3 transcription mode (macOS only). Three modes via the new `transcriptionMode` setting: `gemini` (default, audio→cloud), `local-then-gemini` (offline Parakeet recognises, Gemini polishes the text), `local-only` (offline, no LLM, no network). Backend is a Swift CLI (`swift/Sources/parakeet-bridge/main.swift`) wrapping the FluidAudio package — CoreML + ANE acceleration, ~100× realtime on M-series. The Gemini polish prompt forbids invention/expansion and explicitly preserves original-language technical terms (no `package` → `пакет`, no Cyrillic transliterations). Live load progress + manual "Load now" trigger in Settings.
+
 ## 2026-04-22
 
 [2026-04-22] Bug — Fix `PROHIBITED_CONTENT` safety-filter false positives from Gemini: on safety block, automatically flush the `<previous_transcripts>` context and retry the request once without it before surfacing the error

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import './styles/App.css';
 import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS } from '../lib/audio';
-import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
+import { transcribeAudio, polishTranscript, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
 import { classifyError, ClassifiedError } from '../lib/errors';
 import { playSuccessSound, playErrorSound } from '../lib/sounds';
 import { SettingsButton } from './components/Settings';
@@ -87,6 +87,11 @@ function buildRecorderOptions(settings: AppSettings): AudioRecorderOptions {
     deviceId: settings.microphoneDeviceId || undefined,
     silenceDetectionEnabled: settings.silenceDetectionEnabled ?? true,
     silenceDurationMs: settings.silenceDurationMs || DEFAULT_SILENCE_DURATION_MS,
+    // Local-Parakeet pipelines need a 16 kHz mono WAV. Keep PCM around so
+    // recorder.getWavBase64() can produce one after stop().
+    retainPcmForWav:
+      settings.transcriptionMode === 'local-then-gemini' ||
+      settings.transcriptionMode === 'local-only',
   };
 }
 
@@ -160,7 +165,7 @@ export function App() {
     return classified;
   }, [showMessage]);
 
-  const transcribeWithRetry = useCallback(async (audioBase64: string, mimeType?: string) => {
+  const transcribeWithRetry = useCallback(async (audioBase64: string, mimeType?: string, wavBase64?: string) => {
     // Increment first, atomically determine our ID
     transcribeRequestIdRef.current += 1;
     const requestId = transcribeRequestIdRef.current;
@@ -186,7 +191,8 @@ export function App() {
         return;
       }
 
-      if (!settings.apiKey) {
+      // local-only doesn't talk to any LLM, so the API key isn't required.
+      if (!settings.apiKey && settings.transcriptionMode !== 'local-only') {
         showMessage('Set API key in settings', 'error', true);
         window.electronAPI.openSettingsWindow();
         // Save audio for retry after setting API key
@@ -202,12 +208,38 @@ export function App() {
       }
 
       const options = buildTranscribeOptions(settings, previousTranscripts);
-      // Transcribe audio
-      const transcript = await transcribeAudio(audioBase64, settings.apiKey, settings.model, {
-        ...options,
-        signal: controller.signal,
-        ...(mimeType && { mimeType }),
-      });
+      let transcript: string;
+      if (
+        settings.transcriptionMode === 'local-then-gemini' ||
+        settings.transcriptionMode === 'local-only'
+      ) {
+        if (!wavBase64) {
+          throw new Error(`${settings.transcriptionMode} mode requires WAV audio (retainPcmForWav)`);
+        }
+        if (!window.electronAPI.transcribeLocalStt) {
+          throw new Error('Local STT IPC not available');
+        }
+        const localResult = await window.electronAPI.transcribeLocalStt(wavBase64);
+        if (!localResult.ok) {
+          throw new Error(`Local STT failed: ${localResult.error}`);
+        }
+        if (settings.transcriptionMode === 'local-only') {
+          transcript = localResult.text;
+        } else {
+          transcript = await polishTranscript(
+            localResult.text,
+            settings.apiKey,
+            settings.model,
+            { ...options, signal: controller.signal },
+          );
+        }
+      } else {
+        transcript = await transcribeAudio(audioBase64, settings.apiKey, settings.model, {
+          ...options,
+          signal: controller.signal,
+          ...(mimeType && { mimeType }),
+        });
+      }
 
       if (requestId !== transcribeRequestIdRef.current) {
         return;
@@ -368,7 +400,10 @@ export function App() {
         return;
       }
 
-      await transcribeWithRetry(audioBase64);
+      // For local STT modes the recorder retained PCM — pull a 16 kHz WAV
+      // out alongside the opus blob so the local pipeline has what it wants.
+      const wavBase64 = recorderRef.current?.getWavBase64() ?? undefined;
+      await transcribeWithRetry(audioBase64, undefined, wavBase64);
     } catch (error) {
       // Recording stop error (too short, etc.)
       showError(error);
