@@ -1,6 +1,8 @@
 /**
- * Audio recording module using Web Audio API
- * Records audio as WAV format (PCM, 16-bit, mono, 16kHz)
+ * Audio recording module.
+ * Audio data is encoded by MediaRecorder (opus) for compact upload.
+ * A parallel Web Audio worklet runs only for RMS / silence detection,
+ * optionally retaining PCM for a 16 kHz WAV export (local-STT pipeline).
  */
 
 import { encodeWavToBase64 } from './wav-encoder';
@@ -9,6 +11,12 @@ import { encodeWavToBase64 } from './wav-encoder';
 const TARGET_SAMPLE_RATE = 16000;
 const CHANNELS = 1; // mono
 const BITS_PER_SAMPLE = 16;
+const RECORDER_BITRATE = 24000; // opus 24 kbps — clean speech, ~10x smaller than PCM WAV
+const RECORDER_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/ogg;codecs=opus',
+  'audio/webm',
+];
 
 // Validation constants
 const MIN_RECORDING_MS = 250;
@@ -63,6 +71,13 @@ export interface AudioRecorderOptions {
   deviceId?: string;
   silenceDetectionEnabled?: boolean;
   silenceDurationMs?: number;
+  /**
+   * If true, the worklet's raw PCM frames are kept around and mergeable into
+   * a 16 kHz mono WAV via `getWavBase64()`. Costs a bit of memory and an
+   * extra resample/encode step at stop(); off by default because the main
+   * "Gemini direct" mode uses opus.
+   */
+  retainPcmForWav?: boolean;
 }
 
 export class AudioRecorder {
@@ -70,7 +85,12 @@ export class AudioRecorder {
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private workletNode: AudioWorkletNode | null = null;
-  private audioChunks: Float32Array[] = [];
+  private mediaRecorder: MediaRecorder | null = null;
+  private recorderChunks: Blob[] = [];
+  private recordedMimeType: string = 'audio/webm';
+  // Optional parallel PCM buffer for WAV output (local-STT pipeline).
+  private pcmChunks: Float32Array[] = [];
+  private wavBase64: string | null = null;
   private recordingStartTime: number = 0;
   private isRecording: boolean = false;
   private originalSampleRate: number = TARGET_SAMPLE_RATE;
@@ -89,6 +109,7 @@ export class AudioRecorder {
       deviceId: options.deviceId || '',
       silenceDetectionEnabled: options.silenceDetectionEnabled ?? true,
       silenceDurationMs: options.silenceDurationMs || DEFAULT_SILENCE_DURATION_MS,
+      retainPcmForWav: options.retainPcmForWav ?? false,
     };
   }
 
@@ -184,14 +205,31 @@ export class AudioRecorder {
       // Create AudioWorkletNode to replace deprecated ScriptProcessorNode
       this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-capture-processor');
 
-      // Reset audio chunks and silence detection
-      this.audioChunks = [];
+      // Set up opus encoding via MediaRecorder on the same MediaStream
+      this.recordedMimeType = pickRecorderMimeType();
+      this.recorderChunks = [];
+      this.pcmChunks = [];
+      this.wavBase64 = null;
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+        mimeType: this.recordedMimeType,
+        audioBitsPerSecond: RECORDER_BITRATE,
+      });
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          this.recorderChunks.push(event.data);
+        }
+      };
+      this.mediaRecorder.start();
+
+      // Reset silence detection
       this.silenceStartTime = null;
       this.silenceStopFired = false;
       this.lastSilenceLogTime = Number.NEGATIVE_INFINITY;
       this.lastSoundLogTime = Number.NEGATIVE_INFINITY;
 
-      // Handle audio data from the worklet via MessagePort
+      // Worklet powers RMS / audio-level / silence-detection. When
+      // retainPcmForWav is on, we also clone the PCM chunks for a later
+      // WAV export (local-STT pipeline).
       this.workletNode.port.onmessage = (event: MessageEvent) => {
         if (!this.isRecording) return;
 
@@ -199,8 +237,11 @@ export class AudioRecorder {
         if (type !== 'audio') return;
 
         const inputData = data as Float32Array;
-        // Clone the data since the buffer may be reused
-        this.audioChunks.push(new Float32Array(inputData));
+
+        if (this.options.retainPcmForWav) {
+          // Clone — the underlying ArrayBuffer is reused by the worklet.
+          this.pcmChunks.push(new Float32Array(inputData));
+        }
 
         // Calculate RMS for audio level callback and silence detection
         const rms = this.calculateRMS(inputData);
@@ -312,27 +353,73 @@ export class AudioRecorder {
     }
 
     try {
-      // Merge all audio chunks into a single buffer
-      const mergedAudio = this.mergeAudioChunks();
+      const recorder = this.mediaRecorder;
+      if (!recorder) {
+        throw new AudioRecordingError('MediaRecorder was not initialized');
+      }
 
-      // Resample if necessary
-      const resampledAudio =
-        this.originalSampleRate !== TARGET_SAMPLE_RATE
-          ? this.resample(mergedAudio, this.originalSampleRate, TARGET_SAMPLE_RATE)
-          : mergedAudio;
-
-      const pcmData = this.float32ToInt16(resampledAudio);
-      const base64 = encodeWavToBase64(pcmData, {
-        sampleRate: TARGET_SAMPLE_RATE,
-        numChannels: CHANNELS,
-        bitsPerSample: BITS_PER_SAMPLE,
+      // Wait for the recorder to flush its remaining buffer.
+      const flushStart = performance.now();
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          recorder.onstop = null;
+          recorder.onerror = null;
+          resolve();
+        };
+        recorder.onstop = finish;
+        recorder.onerror = finish;
+        if (recorder.state === 'inactive') {
+          finish();
+        } else {
+          recorder.stop();
+        }
       });
-      console.log('[TEST] AudioRecorder WAV base64 length:', base64.length);
+      const flushMs = performance.now() - flushStart;
+
+      const encodeStart = performance.now();
+      const blob = new Blob(this.recorderChunks, { type: this.recordedMimeType });
+      const base64 = await blobToBase64(blob);
+      const encodeMs = performance.now() - encodeStart;
+
+      // Optional: build a 16 kHz WAV from accumulated PCM for the local-STT
+      // pipeline. Skipped when retainPcmForWav was off — pcmChunks is empty.
+      let wavMs = 0;
+      if (this.options.retainPcmForWav && this.pcmChunks.length > 0) {
+        const wavStart = performance.now();
+        this.wavBase64 = buildWavBase64FromPcm(
+          this.pcmChunks,
+          this.originalSampleRate,
+          TARGET_SAMPLE_RATE
+        );
+        wavMs = performance.now() - wavStart;
+      }
+
+      mainLog(
+        `[Timing] recorder.stop: flush=${flushMs.toFixed(0)}ms, encode=${encodeMs.toFixed(0)}ms${wavMs ? `, wav=${wavMs.toFixed(0)}ms` : ''}, recDuration=${recordingDuration}ms, blobSize=${blob.size}B, base64=${base64.length}ch, mime=${this.recordedMimeType}`
+      );
 
       return base64;
     } finally {
       this.cleanup();
     }
+  }
+
+  /**
+   * Returns the recorded audio as a base64-encoded 16 kHz mono PCM WAV,
+   * or null if `retainPcmForWav` was off. Available after `stop()`.
+   */
+  getWavBase64(): string | null {
+    return this.wavBase64;
+  }
+
+  /**
+   * Mime type of the audio produced by the most recent recording, with
+   * any `;codecs=...` suffix stripped — Gemini's audio sniffer keys on
+   * the bare type.
+   */
+  getMimeType(): string {
+    const semi = this.recordedMimeType.indexOf(';');
+    return semi >= 0 ? this.recordedMimeType.slice(0, semi).trim() : this.recordedMimeType;
   }
 
   /**
@@ -361,75 +448,23 @@ export class AudioRecorder {
   }
 
   /**
-   * Merge all audio chunks into a single Float32Array
-   */
-  private mergeAudioChunks(): Float32Array {
-    const totalLength = this.audioChunks.reduce(
-      (acc, chunk) => acc + chunk.length,
-      0
-    );
-    const merged = new Float32Array(totalLength);
-    let offset = 0;
-
-    for (const chunk of this.audioChunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return merged;
-  }
-
-  /**
-   * Resample audio from one sample rate to another using linear interpolation
-   */
-  private resample(
-    audioData: Float32Array,
-    fromSampleRate: number,
-    toSampleRate: number
-  ): Float32Array {
-    if (fromSampleRate === toSampleRate) {
-      return audioData;
-    }
-
-    const ratio = fromSampleRate / toSampleRate;
-    const newLength = Math.round(audioData.length / ratio);
-    const result = new Float32Array(newLength);
-
-    for (let i = 0; i < newLength; i++) {
-      const srcIndex = i * ratio;
-      const srcIndexFloor = Math.floor(srcIndex);
-      const srcIndexCeil = Math.min(srcIndexFloor + 1, audioData.length - 1);
-      const fraction = srcIndex - srcIndexFloor;
-
-      // Linear interpolation
-      result[i] =
-        audioData[srcIndexFloor] * (1 - fraction) +
-        audioData[srcIndexCeil] * fraction;
-    }
-
-    return result;
-  }
-
-  /**
-   * Convert Float32 samples to 16-bit PCM.
-   */
-  private float32ToInt16(audioData: Float32Array): Int16Array {
-    const pcmData = new Int16Array(audioData.length);
-
-    for (let i = 0; i < audioData.length; i++) {
-      // Clamp and convert float [-1, 1] to 16-bit integer [-32768, 32767]
-      const sample = Math.max(-1, Math.min(1, audioData[i]));
-      const intSample = sample < 0 ? sample * 32768 : sample * 32767;
-      pcmData[i] = Math.trunc(intSample);
-    }
-
-    return pcmData;
-  }
-
-  /**
    * Clean up all resources
    */
   private cleanup(): void {
+    if (this.mediaRecorder) {
+      this.mediaRecorder.ondataavailable = null;
+      this.mediaRecorder.onstop = null;
+      this.mediaRecorder.onerror = null;
+      if (this.mediaRecorder.state !== 'inactive') {
+        try {
+          this.mediaRecorder.stop();
+        } catch {
+          // ignore
+        }
+      }
+      this.mediaRecorder = null;
+    }
+
     if (this.workletNode) {
       this.workletNode.port.onmessage = null;
       this.workletNode.disconnect();
@@ -451,10 +486,101 @@ export class AudioRecorder {
       this.mediaStream = null;
     }
 
-    this.audioChunks = [];
+    this.recorderChunks = [];
+    this.pcmChunks = [];
     this.silenceStartTime = null;
     this.silenceStopFired = false;
   }
+}
+
+// Forward a timing/diagnostic message to the main process log so it
+// shows up in `~/Library/Logs/Nerd Dictum/main.log` (the place the
+// user actually tails). Falls back to console.log in tests / non-Electron.
+function mainLog(message: string): void {
+  if (typeof window !== 'undefined' && window.electronAPI?.log) {
+    window.electronAPI.log(message);
+  } else {
+    console.log(message);
+  }
+}
+
+function buildWavBase64FromPcm(
+  chunks: Float32Array[],
+  fromSampleRate: number,
+  toSampleRate: number
+): string {
+  // Concatenate chunks
+  let totalLength = 0;
+  for (const chunk of chunks) totalLength += chunk.length;
+  const merged = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  // Linear-interpolation resample to target rate (e.g. 48k -> 16k).
+  const resampled =
+    fromSampleRate === toSampleRate ? merged : resampleLinear(merged, fromSampleRate, toSampleRate);
+
+  // Float32 [-1, 1] -> int16
+  const pcm16 = new Int16Array(resampled.length);
+  for (let i = 0; i < resampled.length; i++) {
+    const sample = Math.max(-1, Math.min(1, resampled[i]));
+    pcm16[i] = sample < 0 ? Math.trunc(sample * 32768) : Math.trunc(sample * 32767);
+  }
+
+  return encodeWavToBase64(pcm16, {
+    sampleRate: toSampleRate,
+    numChannels: CHANNELS,
+    bitsPerSample: BITS_PER_SAMPLE,
+  });
+}
+
+function resampleLinear(
+  audioData: Float32Array,
+  fromSampleRate: number,
+  toSampleRate: number
+): Float32Array {
+  if (fromSampleRate === toSampleRate) return audioData;
+  const ratio = fromSampleRate / toSampleRate;
+  const newLength = Math.round(audioData.length / ratio);
+  const result = new Float32Array(newLength);
+  for (let i = 0; i < newLength; i++) {
+    const srcIndex = i * ratio;
+    const srcFloor = Math.floor(srcIndex);
+    const srcCeil = Math.min(srcFloor + 1, audioData.length - 1);
+    const fraction = srcIndex - srcFloor;
+    result[i] = audioData[srcFloor] * (1 - fraction) + audioData[srcCeil] * fraction;
+  }
+  return result;
+}
+
+function pickRecorderMimeType(): string {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+    return 'audio/webm';
+  }
+  const supported = RECORDER_MIME_CANDIDATES.find((mime) =>
+    MediaRecorder.isTypeSupported(mime)
+  );
+  return supported || 'audio/webm';
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('FileReader did not return a data URL'));
+        return;
+      }
+      const commaIndex = result.indexOf(',');
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
 }
 
 // Export utility functions for testing
