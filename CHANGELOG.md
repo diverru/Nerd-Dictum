@@ -12,6 +12,8 @@
 
 [2026-05-06] Voice UX — Auto-paste the transcript into the active window via osascript (`key code 9 using command down`). Cursor/VS Code accept this form (they ignore `keystroke "v"`). Requires Accessibility permission on macOS; toggleable via `autoPasteEnabled`.
 
+[2026-05-06] Voice UX — Always-listening wake-word detection via openWakeWord ONNX models (`onnxruntime-node` + `@picovoice/pvrecorder-node`). Built-in keywords: alexa, hey_jarvis, hey_mycroft. Drop additional `.onnx` models into `<userData>/wake-words/`. Threshold + keyword + enable toggle in Settings.
+
 ## 2026-04-22
 
 [2026-04-22] Bug — Fix `PROHIBITED_CONTENT` safety-filter false positives from Gemini: on safety block, automatically flush the `<previous_transcripts>` context and retry the request once without it before surfacing the error

@@ -12,6 +12,8 @@ export interface ErrorDetail {
 export interface ElectronAPI {
   copyToClipboard: (text: string, autoPaste?: boolean) => Promise<boolean>;
   log?: (message: string) => void;
+  listWakeWordModels?: () => Promise<Array<{ name: string; label: string; isBuiltin: boolean }>>;
+  openWakeWordFolder?: () => Promise<string>;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;
   onToggleRecording: (callback: () => void) => () => void;

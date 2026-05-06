@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyToClipboard: (text: string, autoPaste = false) =>
     ipcRenderer.invoke('copy-to-clipboard', text, autoPaste),
   log: (message: string) => ipcRenderer.send('renderer-log', message),
+  listWakeWordModels: () => ipcRenderer.invoke('list-wake-word-models'),
+  openWakeWordFolder: () => ipcRenderer.invoke('open-wake-word-folder'),
   getApiKey: () => ipcRenderer.invoke('get-api-key'),
   getModel: () => ipcRenderer.invoke('get-model'),
   onToggleRecording: (callback: () => void) => {

@@ -150,10 +150,14 @@ Gemini-direct dictation:
 - **Auto-paste** the transcript via `osascript` `key code 9 using command
   down`. Cursor / VS Code accept this form (they ignore `keystroke "v"`).
   Gated by Accessibility permission and the `autoPasteEnabled` setting.
+- **Wake-word** (`src/main/wake-word.ts`) via `onnxruntime-node` +
+  `@picovoice/pvrecorder-node`, using openWakeWord ONNX models bundled in
+  `assets/wake-word/`. Custom keywords drop into `<userData>/wake-words/`.
 
 ## Native Modules and Universal macOS Builds
 
-`uiohook-napi` ships prebuilds for one architecture per file. The
-universal-merge step in electron-builder is configured to keep both arches
-via the `singleArchFiles`/`x64ArchFiles` glob in `package.json`. When
-adding a new native module touch that glob too.
+`uiohook-napi`, `onnxruntime-node`, and `@picovoice/pvrecorder-node` ship
+prebuilds for one architecture per file. The universal-merge step in
+electron-builder is configured to keep both arches via the
+`singleArchFiles`/`x64ArchFiles` glob in `package.json`. When adding a new
+native module touch that glob too.

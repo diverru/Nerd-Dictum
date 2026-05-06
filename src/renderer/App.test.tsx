@@ -75,6 +75,9 @@ const defaultSettings = {
   holdToRecordEnabled: false,
   holdToRecordKey: 'RightMeta' as const,
   autoPasteEnabled: false,
+  wakeWordEnabled: false,
+  wakeWordKeyword: 'hey_jarvis' as const,
+  wakeWordThreshold: 0.5,
 };
 
 /**
