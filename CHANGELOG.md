@@ -8,6 +8,8 @@
 
 [2026-05-06] Tooling — Renderer-side `log()` calls are now forwarded to the main-process log file at `~/Library/Logs/Nerd Dictum/main.log` via `ipcRenderer.send('renderer-log', …)`. Diagnostics from React land in the same place as everything else.
 
+[2026-05-06] Voice UX — Restored hold-to-record via `uiohook-napi`. Default key Left Option (configurable in Settings). Silence-detection auto-stop is suppressed while the key is held — release ends the recording. Universal-build native-module merge handled via `singleArchFiles`/`x64ArchFiles` globs in electron-builder.
+
 ## 2026-04-22
 
 [2026-04-22] Bug — Fix `PROHIBITED_CONTENT` safety-filter false positives from Gemini: on safety block, automatically flush the `<previous_transcripts>` context and retry the request once without it before surfacing the error

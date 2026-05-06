@@ -27,6 +27,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('stop-recording', listener);
     };
   },
+  onHoldKeyDown: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('hold-key-down', listener);
+    return () => {
+      ipcRenderer.removeListener('hold-key-down', listener);
+    };
+  },
+  onHoldKeyUp: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('hold-key-up', listener);
+    return () => {
+      ipcRenderer.removeListener('hold-key-up', listener);
+    };
+  },
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: Partial<AppSettings>) => ipcRenderer.invoke('save-settings', settings),
   openSettingsWindow: () => ipcRenderer.invoke('open-settings-window'),

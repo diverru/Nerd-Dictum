@@ -11,6 +11,7 @@ import type { WindowPosition } from './window-position';
 import { captureCurrentClipboard, addTranscriptionToHistory, restoreClipboardEntry, getClipboardHistory, getEntryLabel } from './clipboard-history';
 import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts } from './transcript-history';
 import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from './stats';
+import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -124,7 +125,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   hotkey: DEFAULT_HOTKEY,
   widgetHidden: false,
   holdToRecordEnabled: true,
-  holdToRecordKey: 'RightMeta',
+  holdToRecordKey: 'LeftAlt',
 };
 
 function getSettingsPath(): string {
@@ -856,8 +857,38 @@ function registerGlobalShortcuts() {
     }
   }
 
-  // Hold-to-record feature temporarily disabled due to uiohook-napi
-  // causing issues with universal macOS builds. See CLAUDE.md for details.
+  setupHoldToRecord();
+}
+
+function setupHoldToRecord() {
+  if (appSettings.holdToRecordEnabled) {
+    const started = startKeyboardHook(appSettings.holdToRecordKey, {
+      onKeyDown: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          log('[HoldToRecord] Key down, starting recording');
+          // hold-key-down is observed by the renderer to suppress
+          // silence-detection auto-stop while the key is physically held.
+          mainWindow.webContents.send('hold-key-down');
+          mainWindow.webContents.send('start-recording');
+        }
+      },
+      onKeyUp: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          log('[HoldToRecord] Key up, stopping recording');
+          mainWindow.webContents.send('hold-key-up');
+          mainWindow.webContents.send('stop-recording');
+        }
+      },
+    });
+    if (started) {
+      log('[HoldToRecord] Started with key:', appSettings.holdToRecordKey);
+    } else {
+      log('[HoldToRecord] Failed to start keyboard hook');
+    }
+  } else {
+    stopKeyboardHook();
+    log('[HoldToRecord] Disabled');
+  }
 }
 
 function createApplicationMenu() {
@@ -1223,6 +1254,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  stopKeyboardHook();
   stopHeartbeat();
   if (tray) {
     tray.destroy();
@@ -1292,12 +1324,16 @@ ipcMain.handle('get-settings', () => {
     clarificationEnabled: appSettings.clarificationEnabled,
     previousTranscriptContextEnabled: appSettings.previousTranscriptContextEnabled,
     hotkey: appSettings.hotkey || DEFAULT_HOTKEY,
+    holdToRecordEnabled: appSettings.holdToRecordEnabled,
+    holdToRecordKey: appSettings.holdToRecordKey,
   };
 });
 
 ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
   const oldHotkey = appSettings.hotkey;
   const oldWidgetHidden = appSettings.widgetHidden;
+  const oldHoldToRecordEnabled = appSettings.holdToRecordEnabled;
+  const oldHoldToRecordKey = appSettings.holdToRecordKey;
   appSettings = { ...appSettings, ...settings };
   const result = saveSettings(appSettings);
 
@@ -1305,6 +1341,14 @@ ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
   if (settings.hotkey !== undefined && settings.hotkey !== oldHotkey) {
     registerGlobalShortcuts();
     updateTrayTooltip();
+  }
+
+  // Restart keyboard hook if hold-to-record settings changed
+  const holdToRecordChanged =
+    (settings.holdToRecordEnabled !== undefined && settings.holdToRecordEnabled !== oldHoldToRecordEnabled) ||
+    (settings.holdToRecordKey !== undefined && settings.holdToRecordKey !== oldHoldToRecordKey);
+  if (holdToRecordChanged) {
+    setupHoldToRecord();
   }
 
   // Show/hide widget if widgetHidden setting changed

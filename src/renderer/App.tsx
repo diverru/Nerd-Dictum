@@ -92,6 +92,9 @@ export function App() {
   const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcribeAbortRef = useRef<AbortController | null>(null);
   const transcribeRequestIdRef = useRef(0);
+  // While true, the hold-to-record key is still pressed — silence-detection
+  // must not auto-stop recording.
+  const isHoldKeyDownRef = useRef(false);
 
   const showMessage = useCallback((text: string, type: MessageType = 'success', isRetryable = false, hasErrorDetail = false) => {
     // Clear any existing timeout
@@ -335,8 +338,14 @@ export function App() {
       const settings = await window.electronAPI.getSettings();
       const recorderOptions = buildRecorderOptions(settings);
       recorderRef.current = new AudioRecorder(undefined, recorderOptions);
-      // Set up silence detection callback for auto-stop
+      // Set up silence detection callback for auto-stop. Skip while the
+      // hold-to-record key is still held: the user wants the recording to
+      // continue until they physically release the key.
       recorderRef.current.setOnSilenceStop(() => {
+        if (isHoldKeyDownRef.current) {
+          console.log('[Recording] Silence detected but hold-key still down — ignoring auto-stop');
+          return;
+        }
         stopRecordingAndTranscribe();
       });
       // Set up audio level callback for visualization with smoothing
@@ -434,6 +443,42 @@ export function App() {
       unsubscribe();
     };
   }, [handleToggleRecording, state]);
+
+  // Hold-to-record: dedicated start / stop events from the keyboard hook.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onStartRecording(() => {
+      startRecording();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [startRecording]);
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onStopRecording(() => {
+      if (recorderRef.current?.getIsRecording()) {
+        stopRecordingAndTranscribe();
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [stopRecordingAndTranscribe]);
+
+  // Track the hold-to-record key state so silence-detection can skip its
+  // auto-stop while the user is still holding the key.
+  useEffect(() => {
+    const unsubDown = window.electronAPI.onHoldKeyDown?.(() => {
+      isHoldKeyDownRef.current = true;
+    });
+    const unsubUp = window.electronAPI.onHoldKeyUp?.(() => {
+      isHoldKeyDownRef.current = false;
+    });
+    return () => {
+      unsubDown?.();
+      unsubUp?.();
+    };
+  }, []);
 
   // Load app version on mount
   useEffect(() => {

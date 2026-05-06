@@ -17,6 +17,8 @@ export interface ElectronAPI {
   onToggleRecording: (callback: () => void) => () => void;
   onStartRecording: (callback: () => void) => () => void;
   onStopRecording: (callback: () => void) => () => void;
+  onHoldKeyDown?: (callback: () => void) => () => void;
+  onHoldKeyUp?: (callback: () => void) => () => void;
   getSettings: () => Promise<AppSettings>;
   saveSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
   openSettingsWindow: () => Promise<boolean>;

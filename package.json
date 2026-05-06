@@ -41,6 +41,7 @@
     "directories": {
       "output": "release"
     },
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
       "node_modules/**/*",
@@ -74,7 +75,9 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "This app needs microphone access to record and transcribe your voice."
       },
-      "notarize": true
+      "notarize": true,
+      "singleArchFiles": "**/uiohook-napi/**/*.{node,dylib}",
+      "x64ArchFiles": "**/uiohook-napi/**/*.{node,dylib}"
     },
     "win": {
       "target": [
@@ -117,6 +120,7 @@
     "electron-log": "^5.4.3",
     "electron-updater": "^6.7.3",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "uiohook-napi": "^1.5.5"
   }
 }

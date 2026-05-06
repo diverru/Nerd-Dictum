@@ -139,21 +139,18 @@ tail -f ~/Library/Logs/Nerd\ Dictum/main.log
 - People with non-standard speech patterns
 - Anyone dictating technical content who's tired of autocorrect mangling their words
 
-## Known Issues
+## Voice UX (diverru fork)
 
-### Native Modules and Universal macOS Builds
+The fork adds an end-to-end hands-free voice flow on top of the upstream
+Gemini-direct dictation:
 
-**Problem:** Native Node.js modules with prebuilds (like `uiohook-napi`) cause mach-o mismatch errors when building universal macOS binaries. The `@electron/universal` tool cannot merge the builds because prebuild binaries exist only for one architecture in the `build/Release` directory.
+- **Hold-to-record** (`src/main/keyboard-hook.ts`) via `uiohook-napi`. Default
+  is Left Option. Silence-detection auto-stop is suppressed while the key is
+  held — release ends the recording.
 
-**What was tried:**
-- `singleArchFiles` and `x64ArchFiles` in electron-builder config — doesn't work for files outside ASAR
-- `npmRebuild: false` to skip `@electron/rebuild` — build passes but app crashes at runtime
-- `PREBUILDS_ONLY=true` env var for `node-gyp-build` — still doesn't work in production builds
-- Separate x64/arm64 builds — breaks auto-updates
+## Native Modules and Universal macOS Builds
 
-**Current workaround:** The hold-to-record feature (which required `uiohook-napi` for global keyboard hooks) has been temporarily removed. The types (`HoldToRecordKey`, settings fields) are preserved in `src/shared/types.ts` for future restoration.
-
-**To restore hold-to-record:**
-1. Find a native module alternative that works with universal builds, OR
-2. Find a way to make `uiohook-napi` work with `@electron/universal`, OR
-3. Use Electron's built-in `globalShortcut` API for a subset of functionality (limited to shortcuts, not hold-to-release behavior)
+`uiohook-napi` ships prebuilds for one architecture per file. The
+universal-merge step in electron-builder is configured to keep both arches
+via the `singleArchFiles`/`x64ArchFiles` glob in `package.json`. When
+adding a new native module touch that glob too.
