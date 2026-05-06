@@ -158,6 +158,9 @@ Gemini-direct dictation:
   results that exactly echo a recent transcript or a single keyword from
   the correction dictionary. Gemini `generationConfig` is pinned to
   greedy/deterministic decoding.
+- **Hands-free Enter**: a wake-word-triggered transcription, when pasted,
+  chains V + Enter in a single AppleScript with a 250 ms delay between
+  them so V always lands first. Toggle: `wakeWordPressEnter`.
 
 ## Native Modules and Universal macOS Builds
 

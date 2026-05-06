@@ -126,6 +126,10 @@ export function App() {
   // While true, the hold-to-record key is still pressed — silence-detection
   // must not auto-stop recording.
   const isHoldKeyDownRef = useRef(false);
+  // True when the in-flight transcription was started by the wake-word
+  // detector. We use this to send Enter after auto-paste so the hands-free
+  // flow fully submits without keyboard interaction.
+  const wakeWordTriggeredRef = useRef(false);
 
   const showMessage = useCallback((text: string, type: MessageType = 'success', isRetryable = false, hasErrorDetail = false) => {
     // Clear any existing timeout
@@ -242,6 +246,8 @@ export function App() {
           playErrorSound();
         }
         lastAudioRef.current = null;
+        // Hands-free flow aborted: don't carry the flag into the next session.
+        wakeWordTriggeredRef.current = false;
         setState('idle');
         return;
       }
@@ -249,7 +255,17 @@ export function App() {
       // Copy to clipboard
       // autoPaste=true: dispatch ⌘V into the focused window so the
       // transcript appears at the cursor without keyboard interaction.
-      await window.electronAPI.copyToClipboard(transcript, true);
+      // When this transcription was started by the wake-word detector AND
+      // the user enabled `wakeWordPressEnter`, also press Enter so the
+      // chat / form / prompt is submitted hands-free. Both keystrokes are
+      // dispatched by main in a single osascript so V definitely lands
+      // before Enter.
+      const submitOnPaste =
+        wakeWordTriggeredRef.current && (settings.wakeWordPressEnter ?? true);
+      // Consume the wake-word flag so the next manual recording doesn't
+      // inherit the auto-Enter behaviour.
+      wakeWordTriggeredRef.current = false;
+      await window.electronAPI.copyToClipboard(transcript, true, submitOnPaste);
       if (requestId !== transcribeRequestIdRef.current) {
         return;
       }
@@ -543,6 +559,17 @@ export function App() {
       unsubscribe();
     };
   }, [stopRecordingAndTranscribe]);
+
+  // Wake-word detection: main process emits wake-word-triggered just before
+  // start-recording, so we set the ref first and the start handler picks it up.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onWakeWordTriggered?.(() => {
+      wakeWordTriggeredRef.current = true;
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
 
   // Track the hold-to-record key state so silence-detection can skip its
   // auto-stop while the user is still holding the key.

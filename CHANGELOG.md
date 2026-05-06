@@ -18,6 +18,8 @@
 
 [2026-05-06] Settings — Dynamic Gemini model list. Settings now fetches `generativelanguage.googleapis.com/v1beta/models` and surfaces a dropdown filtered to entries that support `generateContent` and start with `gemini-`. "Refresh model list" button to re-fetch; manual override remains available.
 
+[2026-05-06] Voice UX — Hands-free Enter after wake-word auto-paste. A wake-word-triggered transcription pastes ⌘V then Enter, chained inside a single osascript with a 250 ms delay between them so V always lands first. Manual hold-to-record recordings paste without Enter. Toggle: `wakeWordPressEnter`.
+
 ## 2026-04-22
 
 [2026-04-22] Bug — Fix `PROHIBITED_CONTENT` safety-filter false positives from Gemini: on safety block, automatically flush the `<previous_transcripts>` context and retry the request once without it before surfacing the error
