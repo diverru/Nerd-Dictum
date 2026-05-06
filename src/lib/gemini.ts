@@ -177,7 +177,9 @@ function buildCustomKeywordsSection(customKeywords?: string): string {
     return `- ${entry.term} (aliases: ${entry.aliases.join(', ')})`;
   });
 
-  return `\n\nUser keywords and corrections:\n${lines.join('\n')}\nPrefer the target term when audio matches an alias or is ambiguous. Preserve exact casing.`;
+  return `\n\nSpelling-correction dictionary (apply ONLY when the speaker literally says one of the entries below; do NOT insert any of these terms unless actually spoken):
+${lines.join('\n')}
+Use the canonical form on the left when the speaker says it or one of its aliases. Preserve exact casing. Never output a dictionary entry if it is not actually spoken in the audio.`;
 }
 
 function buildPrompt(options?: TranscribeOptions): string {
@@ -195,7 +197,11 @@ Domain hint: ${options.customDomainHint}`;
     basePrompt = DEFAULT_TRANSCRIPTION_PROMPT;
   }
 
-  let prompt = basePrompt;
+  let prompt = `IMPORTANT — silence handling:
+If the audio is silent, contains no speech, is too short to contain words, is unintelligible, or contains only background noise, your response MUST be exactly the empty string (zero characters).
+Do NOT output any keyword, dictionary entry, previous transcript, language hint, or example as a fallback. Empty audio = empty output. No exceptions.
+
+` + basePrompt;
 
   // Add clarification instruction if enabled (default behavior)
   if (options?.clarificationEnabled !== false) {
@@ -224,11 +230,20 @@ Domain hint: ${options.customDomainHint}`;
     const transcriptsBlock = orderedTranscripts
       .map((t, i) => `<transcript index="${i + 1}">\n${t}\n</transcript>`)
       .join('\n');
-    prompt += `\n\nContext from previous transcriptions (the current audio may be a continuation):
-<previous_transcripts>
+    prompt += `\n\n<previous_transcripts>
 ${transcriptsBlock}
-</previous_transcripts>`;
+</previous_transcripts>
+
+The previous_transcripts block above is REFERENCE ONLY — it shows recent past transcriptions so you can disambiguate technical terms and resolve mid-sentence references. Use it ONLY to disambiguate.
+
+CRITICAL RULES for the current audio:
+- Transcribe ONLY what is actually spoken in the audio file attached to THIS request.
+- If the audio is silent, contains no intelligible speech, or is too short, output the empty string and nothing else.
+- NEVER copy, repeat, paraphrase, or continue text from previous_transcripts unless the speaker literally repeats those words in the new audio.
+- Do not hallucinate. If unsure, output empty string.`;
   }
+
+  prompt += `\n\nFINAL REMINDER: Empty audio → empty output. Never output a keyword, alias, language name, previous transcript, hint, or any other piece of this prompt as a fallback. The ONLY allowed outputs are: (a) the literal words spoken, or (b) the empty string.`;
 
   return prompt;
 }
@@ -257,6 +272,14 @@ function buildRequestBody(prompt: string, audioBase64: string, mimeType: string 
       },
     ],
     safetySettings: PERMISSIVE_SAFETY_SETTINGS,
+    generationConfig: {
+      // Greedy decoding — no sampling search, faster and deterministic.
+      temperature: 0,
+      topP: 1,
+      // For Gemini 2.5/3 thinking-capable models: skip the thinking phase.
+      // No-op on lite/flash variants that don't think; harmless either way.
+      thinkingConfig: { thinkingBudget: 0 },
+    },
   };
 }
 
