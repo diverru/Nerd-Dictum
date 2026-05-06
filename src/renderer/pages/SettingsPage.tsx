@@ -149,6 +149,7 @@ export function SettingsPage() {
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeWordKeyword, setWakeWordKeyword] = useState<string>('hey_jarvis');
   const [wakeWordThreshold, setWakeWordThreshold] = useState(0.5);
+  const [wakeWordPressEnter, setWakeWordPressEnter] = useState(true);
   const [wakeWordModels, setWakeWordModels] = useState<Array<{ name: string; label: string; isBuiltin: boolean }>>([]);
   const [geminiModels, setGeminiModels] = useState<Array<{ id: string; displayName: string; description: string }>>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -189,6 +190,7 @@ export function SettingsPage() {
     wakeWordEnabled: boolean;
     wakeWordKeyword: string;
     wakeWordThreshold: number;
+    wakeWordPressEnter: boolean;
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -222,7 +224,8 @@ export function SettingsPage() {
       autoPasteEnabled !== initial.autoPasteEnabled ||
       wakeWordEnabled !== initial.wakeWordEnabled ||
       wakeWordKeyword !== initial.wakeWordKeyword ||
-      wakeWordThreshold !== initial.wakeWordThreshold
+      wakeWordThreshold !== initial.wakeWordThreshold ||
+      wakeWordPressEnter !== initial.wakeWordPressEnter
     );
   }, [
     apiKey,
@@ -246,6 +249,7 @@ export function SettingsPage() {
     wakeWordEnabled,
     wakeWordKeyword,
     wakeWordThreshold,
+    wakeWordPressEnter,
   ]);
 
   // Load audio devices
@@ -328,6 +332,7 @@ export function SettingsPage() {
         const loadedWakeWordEnabled = settings.wakeWordEnabled ?? false;
         const loadedWakeWordKeyword = settings.wakeWordKeyword || 'hey_jarvis';
         const loadedWakeWordThreshold = settings.wakeWordThreshold ?? 0.5;
+        const loadedWakeWordPressEnter = settings.wakeWordPressEnter ?? true;
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -350,6 +355,7 @@ export function SettingsPage() {
         setWakeWordEnabled(loadedWakeWordEnabled);
         setWakeWordKeyword(loadedWakeWordKeyword);
         setWakeWordThreshold(loadedWakeWordThreshold);
+        setWakeWordPressEnter(loadedWakeWordPressEnter);
 
         // Store initial settings for unsaved changes comparison
         initialSettingsRef.current = {
@@ -374,6 +380,7 @@ export function SettingsPage() {
           wakeWordEnabled: loadedWakeWordEnabled,
           wakeWordKeyword: loadedWakeWordKeyword,
           wakeWordThreshold: loadedWakeWordThreshold,
+          wakeWordPressEnter: loadedWakeWordPressEnter,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -468,6 +475,7 @@ export function SettingsPage() {
         wakeWordEnabled,
         wakeWordKeyword,
         wakeWordThreshold,
+        wakeWordPressEnter,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -493,6 +501,7 @@ export function SettingsPage() {
           wakeWordEnabled,
           wakeWordKeyword,
           wakeWordThreshold,
+          wakeWordPressEnter,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -930,6 +939,20 @@ export function SettingsPage() {
                   />
                   <span className="settings-hint">
                     Higher = fewer false positives but more missed wakes. 0.5 is a sane default.
+                  </span>
+                </div>
+
+                <div className="settings-field">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={wakeWordPressEnter}
+                      onChange={(e) => setWakeWordPressEnter(e.target.checked)}
+                    />
+                    <span>Press Enter after auto-paste</span>
+                  </label>
+                  <span className="settings-hint">
+                    After the wake-word triggered transcript is pasted, also press Enter so the chat / form / prompt is submitted hands-free. Only applies to wake-word recordings, not manual hold-to-record.
                   </span>
                 </div>
 

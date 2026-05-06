@@ -131,6 +131,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   wakeWordEnabled: false,
   wakeWordKeyword: 'hey_jarvis',
   wakeWordThreshold: 0.5,
+  wakeWordPressEnter: true,
 };
 
 function getSettingsPath(): string {
@@ -908,6 +909,9 @@ async function setupWakeWord() {
     onDetect: ({ keyword, probability }) => {
       log(`[WakeWord] Triggered: ${keyword} (p=${probability.toFixed(3)}) — starting recording`);
       if (mainWindow && !mainWindow.isDestroyed()) {
+        // Order matters: renderer must see wake-word-triggered before
+        // start-recording so it can flag the upcoming session as hands-free.
+        mainWindow.webContents.send('wake-word-triggered');
         mainWindow.webContents.send('start-recording');
       }
     },
@@ -1303,7 +1307,7 @@ app.on('activate', () => {
 });
 
 // IPC handlers
-ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false) => {
+ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pressEnterAfter = false) => {
   log('[Clipboard] Copying transcript (' + text.length + ' chars):', text.substring(0, 200));
   // Capture current clipboard content before overwriting
   captureCurrentClipboard();
@@ -1316,8 +1320,8 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false) =>
   updateTrayMenu();
 
   if (autoPaste && appSettings.autoPasteEnabled) {
-    log('[Clipboard] Auto-paste branch hit — dispatching keystroke');
-    pasteIntoActiveWindow();
+    log(`[Clipboard] Auto-paste branch hit — dispatching keystroke (pressEnterAfter=${pressEnterAfter})`);
+    pasteIntoActiveWindow(pressEnterAfter);
   } else {
     log(
       `[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`
@@ -1340,7 +1344,7 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false) =>
  * first time, and skip the keystroke (with a clear log line) when the
  * permission isn't granted yet.
  */
-function pasteIntoActiveWindow(): void {
+function pasteIntoActiveWindow(pressEnterAfter = false): void {
   if (process.platform === 'darwin') {
     const trusted = systemPreferences.isTrustedAccessibilityClient(true);
     log(`[AutoPaste] Accessibility trusted=${trusted}`);
@@ -1360,9 +1364,16 @@ function pasteIntoActiveWindow(): void {
         (frontErr, frontStdout) => {
           const frontApp = frontStdout?.trim() || '(unknown)';
           log(`[AutoPaste] frontmost app at paste time: "${frontApp}"${frontErr ? ` (err: ${frontErr.message})` : ''}`);
-          log('[AutoPaste] osascript: key code 9 with command down');
+          // Chain V + (optionally) Enter into a single osascript invocation
+          // with a short delay between them. If we exec'd two separate
+          // osascripts, Enter could land before V finished pasting and the
+          // form would submit empty.
+          const script = pressEnterAfter
+            ? `tell application "System Events" to key code 9 using command down\ndelay 0.25\ntell application "System Events" to key code 36`
+            : `tell application "System Events" to key code 9 using command down`;
+          log(`[AutoPaste] osascript dispatch (pressEnterAfter=${pressEnterAfter})`);
           exec(
-            `osascript -e 'tell application "System Events" to key code 9 using command down'`,
+            `osascript -e '${script.replace(/\n/g, "' -e '")}'`,
             (error, _stdout, stderr) => {
               if (error) {
                 log('[AutoPaste] Failed:', error.message, '| stderr:', stderr);
@@ -1376,14 +1387,18 @@ function pasteIntoActiveWindow(): void {
     }, 50);
   } else if (process.platform === 'win32') {
     setTimeout(() => {
-      const psScript = 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')';
+      const keys = pressEnterAfter ? '^v{ENTER}' : '^v';
+      const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
       exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {
         if (error) log('[AutoPaste] Failed:', error.message);
       });
     }, 50);
   } else {
     setTimeout(() => {
-      exec('xdotool key --clearmodifiers ctrl+v', (error) => {
+      const cmd = pressEnterAfter
+        ? 'xdotool key --clearmodifiers ctrl+v && sleep 0.25 && xdotool key --clearmodifiers Return'
+        : 'xdotool key --clearmodifiers ctrl+v';
+      exec(cmd, (error) => {
         if (error) log('[AutoPaste] xdotool not available or failed:', error.message);
       });
     }, 50);
@@ -1483,6 +1498,7 @@ ipcMain.handle('get-settings', () => {
     wakeWordEnabled: appSettings.wakeWordEnabled,
     wakeWordKeyword: appSettings.wakeWordKeyword,
     wakeWordThreshold: appSettings.wakeWordThreshold,
+    wakeWordPressEnter: appSettings.wakeWordPressEnter,
   };
 });
 

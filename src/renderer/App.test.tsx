@@ -78,6 +78,7 @@ const defaultSettings = {
   wakeWordEnabled: false,
   wakeWordKeyword: 'hey_jarvis' as const,
   wakeWordThreshold: 0.5,
+  wakeWordPressEnter: true,
 };
 
 /**

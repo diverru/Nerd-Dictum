@@ -2,8 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AppSettings } from '../shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  copyToClipboard: (text: string, autoPaste = false) =>
-    ipcRenderer.invoke('copy-to-clipboard', text, autoPaste),
+  copyToClipboard: (text: string, autoPaste = false, pressEnterAfter = false) =>
+    ipcRenderer.invoke('copy-to-clipboard', text, autoPaste, pressEnterAfter),
   log: (message: string) => ipcRenderer.send('renderer-log', message),
   listWakeWordModels: () => ipcRenderer.invoke('list-wake-word-models'),
   openWakeWordFolder: () => ipcRenderer.invoke('open-wake-word-folder'),
@@ -43,6 +43,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('hold-key-up', listener);
     return () => {
       ipcRenderer.removeListener('hold-key-up', listener);
+    };
+  },
+  onWakeWordTriggered: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('wake-word-triggered', listener);
+    return () => {
+      ipcRenderer.removeListener('wake-word-triggered', listener);
     };
   },
   getSettings: () => ipcRenderer.invoke('get-settings'),

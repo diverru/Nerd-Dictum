@@ -26,6 +26,7 @@ const defaultSettings: AppSettings = {
   wakeWordEnabled: false,
   wakeWordKeyword: 'hey_jarvis',
   wakeWordThreshold: 0.5,
+  wakeWordPressEnter: true,
 };
 
 const defaultStats: StatsWithDerived = {

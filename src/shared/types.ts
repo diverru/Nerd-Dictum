@@ -33,6 +33,10 @@ export interface AppSettings {
   // <userData>/wake-words/.
   wakeWordKeyword: string;
   wakeWordThreshold: number;
+  // After auto-paste, also press Enter so chat / form / prompt-style targets
+  // submit hands-free. Only effective when the recording was started by the
+  // wake-word detector (manual hold-key recordings always paste without Enter).
+  wakeWordPressEnter: boolean;
 }
 
 export interface DailyStats {

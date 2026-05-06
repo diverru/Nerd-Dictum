@@ -10,7 +10,7 @@ export interface ErrorDetail {
 }
 
 export interface ElectronAPI {
-  copyToClipboard: (text: string, autoPaste?: boolean) => Promise<boolean>;
+  copyToClipboard: (text: string, autoPaste?: boolean, pressEnterAfter?: boolean) => Promise<boolean>;
   log?: (message: string) => void;
   listWakeWordModels?: () => Promise<Array<{ name: string; label: string; isBuiltin: boolean }>>;
   openWakeWordFolder?: () => Promise<string>;
@@ -25,6 +25,7 @@ export interface ElectronAPI {
   onStopRecording: (callback: () => void) => () => void;
   onHoldKeyDown?: (callback: () => void) => () => void;
   onHoldKeyUp?: (callback: () => void) => () => void;
+  onWakeWordTriggered?: (callback: () => void) => () => void;
   getSettings: () => Promise<AppSettings>;
   saveSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
   openSettingsWindow: () => Promise<boolean>;
