@@ -8,7 +8,7 @@ import electronLog from 'electron-log';
 import { initAnalytics, trackEvent, startHeartbeat, stopHeartbeat } from '../lib/analytics';
 import { getDisplayBounds, isPositionValid } from './window-position';
 import type { WindowPosition } from './window-position';
-import { captureCurrentClipboard, addTranscriptionToHistory, restoreClipboardEntry, getClipboardHistory, getEntryLabel } from './clipboard-history';
+import { captureCurrentClipboard, addTranscriptionToHistory, restoreClipboardEntry, getClipboardHistory, getEntryLabel, snapshotClipboard, restoreSnapshot, type ClipboardEntry } from './clipboard-history';
 import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts } from './transcript-history';
 import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from './stats';
 import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
@@ -1331,7 +1331,12 @@ app.on('activate', () => {
 // IPC handlers
 ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pressEnterAfter = false) => {
   log('[Clipboard] Copying transcript (' + text.length + ' chars):', text.substring(0, 200));
-  // Capture current clipboard content before overwriting
+  const willAutoPaste = autoPaste && appSettings.autoPasteEnabled;
+  // Take a snapshot only when we're about to auto-paste; otherwise the
+  // transcript is supposed to stay in the clipboard for manual paste.
+  const restoreSnapshotEntry = willAutoPaste ? snapshotClipboard() : null;
+  // Also push the pre-paste content into the user-visible history so it
+  // remains reachable from the tray menu even if the auto-restore races.
   captureCurrentClipboard();
   clipboard.writeText(text);
   // Add our transcribed text to history too
@@ -1341,9 +1346,9 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pr
   // Update tray menu to show new history
   updateTrayMenu();
 
-  if (autoPaste && appSettings.autoPasteEnabled) {
-    log(`[Clipboard] Auto-paste branch hit — dispatching keystroke (pressEnterAfter=${pressEnterAfter})`);
-    pasteIntoActiveWindow(pressEnterAfter);
+  if (willAutoPaste) {
+    log(`[Clipboard] Auto-paste branch hit — dispatching keystroke (pressEnterAfter=${pressEnterAfter}, hasSnapshot=${restoreSnapshotEntry !== null})`);
+    pasteIntoActiveWindow(pressEnterAfter, restoreSnapshotEntry);
   } else {
     log(
       `[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`
@@ -1366,12 +1371,33 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pr
  * first time, and skip the keystroke (with a clear log line) when the
  * permission isn't granted yet.
  */
-function pasteIntoActiveWindow(pressEnterAfter = false): void {
+// After the keystroke is dispatched, give the target app this long to actually
+// process Cmd+V before we put the user's previous clipboard back. Too short
+// and the destination reads the restored content; too long and a parallel copy
+// from the user gets clobbered. 250 ms is the sweet spot in practice.
+const CLIPBOARD_RESTORE_DELAY_MS = 250;
+
+function scheduleClipboardRestore(snapshot: ClipboardEntry | null): void {
+  setTimeout(() => {
+    try {
+      restoreSnapshot(snapshot);
+      log(
+        `[AutoPaste] clipboard restored (had ${snapshot ? (snapshot.image && !snapshot.image.isEmpty() ? 'image' : 'text') : 'nothing'})`,
+      );
+    } catch (error) {
+      log('[AutoPaste] clipboard restore failed:', (error as Error).message);
+    }
+  }, CLIPBOARD_RESTORE_DELAY_MS);
+}
+
+function pasteIntoActiveWindow(pressEnterAfter = false, restoreSnapshotEntry: ClipboardEntry | null = null): void {
   if (process.platform === 'darwin') {
     const trusted = systemPreferences.isTrustedAccessibilityClient(true);
     log(`[AutoPaste] Accessibility trusted=${trusted}`);
     if (!trusted) {
       log('[AutoPaste] Accessibility permission missing — paste will not work until granted');
+      // Without paste we'd still want to leave the transcript on the clipboard
+      // so the user can paste manually — skip the restore in that case.
       return;
     }
     // Small delay so the source window can regain focus and the clipboard
@@ -1402,6 +1428,7 @@ function pasteIntoActiveWindow(pressEnterAfter = false): void {
               } else {
                 log('[AutoPaste] keystroke dispatched OK');
               }
+              scheduleClipboardRestore(restoreSnapshotEntry);
             }
           );
         }
@@ -1413,6 +1440,7 @@ function pasteIntoActiveWindow(pressEnterAfter = false): void {
       const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
       exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {
         if (error) log('[AutoPaste] Failed:', error.message);
+        scheduleClipboardRestore(restoreSnapshotEntry);
       });
     }, 50);
   } else {
@@ -1422,6 +1450,7 @@ function pasteIntoActiveWindow(pressEnterAfter = false): void {
         : 'xdotool key --clearmodifiers ctrl+v';
       exec(cmd, (error) => {
         if (error) log('[AutoPaste] xdotool not available or failed:', error.message);
+        scheduleClipboardRestore(restoreSnapshotEntry);
       });
     }, 50);
   }

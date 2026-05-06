@@ -115,6 +115,53 @@ export function getClipboardHistory(): ClipboardEntry[] {
 }
 
 /**
+ * Take a snapshot of the current clipboard WITHOUT adding it to the
+ * user-visible history. Used by auto-paste to restore the user's clipboard
+ * after we briefly overwrite it with the transcript. Returns null if the
+ * clipboard was empty.
+ */
+export function snapshotClipboard(): ClipboardEntry | null {
+  const formats = clipboard.availableFormats();
+  if (formats.length === 0) return null;
+
+  const entry: ClipboardEntry = {
+    id: -1,
+    timestamp: Date.now(),
+  };
+  if (formats.some(f => f.includes('text'))) {
+    const text = clipboard.readText();
+    if (text) entry.text = text;
+  }
+  if (formats.some(f => f.includes('image'))) {
+    const image = clipboard.readImage();
+    if (!image.isEmpty()) entry.image = image;
+  }
+  if (!entry.text && !entry.image) return null;
+  return entry;
+}
+
+/**
+ * Write a previously taken snapshot back to the system clipboard. Pass null
+ * when the original clipboard was empty — the live clipboard is cleared in
+ * that case so the transcript doesn't linger.
+ */
+export function restoreSnapshot(snapshot: ClipboardEntry | null): void {
+  if (!snapshot) {
+    clipboard.clear();
+    return;
+  }
+  if (snapshot.image && !snapshot.image.isEmpty() && snapshot.text) {
+    clipboard.write({ image: snapshot.image, text: snapshot.text });
+  } else if (snapshot.image && !snapshot.image.isEmpty()) {
+    clipboard.writeImage(snapshot.image);
+  } else if (snapshot.text) {
+    clipboard.writeText(snapshot.text);
+  } else {
+    clipboard.clear();
+  }
+}
+
+/**
  * Returns a display label for a clipboard entry.
  * Truncates long text and indicates images.
  * Transcriptions are marked with a microphone icon.
