@@ -23,6 +23,9 @@ const defaultSettings: AppSettings = {
   holdToRecordEnabled: true,
   holdToRecordKey: 'RightMeta',
   autoPasteEnabled: true,
+  wakeWordEnabled: false,
+  wakeWordKeyword: 'hey_jarvis',
+  wakeWordThreshold: 0.5,
 };
 
 const defaultStats: StatsWithDerived = {

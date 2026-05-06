@@ -146,6 +146,10 @@ export function SettingsPage() {
   const [holdToRecordEnabled, setHoldToRecordEnabled] = useState(true);
   const [holdToRecordKey, setHoldToRecordKey] = useState<HoldToRecordKey>('LeftAlt');
   const [autoPasteEnabled, setAutoPasteEnabled] = useState(true);
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [wakeWordKeyword, setWakeWordKeyword] = useState<string>('hey_jarvis');
+  const [wakeWordThreshold, setWakeWordThreshold] = useState(0.5);
+  const [wakeWordModels, setWakeWordModels] = useState<Array<{ name: string; label: string; isBuiltin: boolean }>>([]);
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [languageSearch, setLanguageSearch] = useState('');
@@ -178,6 +182,9 @@ export function SettingsPage() {
     holdToRecordEnabled: boolean;
     holdToRecordKey: HoldToRecordKey;
     autoPasteEnabled: boolean;
+    wakeWordEnabled: boolean;
+    wakeWordKeyword: string;
+    wakeWordThreshold: number;
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -208,7 +215,10 @@ export function SettingsPage() {
       widgetHidden !== initial.widgetHidden ||
       holdToRecordEnabled !== initial.holdToRecordEnabled ||
       holdToRecordKey !== initial.holdToRecordKey ||
-      autoPasteEnabled !== initial.autoPasteEnabled
+      autoPasteEnabled !== initial.autoPasteEnabled ||
+      wakeWordEnabled !== initial.wakeWordEnabled ||
+      wakeWordKeyword !== initial.wakeWordKeyword ||
+      wakeWordThreshold !== initial.wakeWordThreshold
     );
   }, [
     apiKey,
@@ -229,9 +239,26 @@ export function SettingsPage() {
     holdToRecordEnabled,
     holdToRecordKey,
     autoPasteEnabled,
+    wakeWordEnabled,
+    wakeWordKeyword,
+    wakeWordThreshold,
   ]);
 
   // Load audio devices
+  const loadWakeWordModels = useCallback(async () => {
+    if (!window.electronAPI.listWakeWordModels) return;
+    try {
+      const models = await window.electronAPI.listWakeWordModels();
+      setWakeWordModels(models);
+    } catch (error) {
+      console.error('[Settings] Failed to list wake-word models:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadWakeWordModels();
+  }, [loadWakeWordModels]);
+
   useEffect(() => {
     async function loadAudioDevices() {
       try {
@@ -277,6 +304,9 @@ export function SettingsPage() {
         const loadedHoldToRecordEnabled = settings.holdToRecordEnabled ?? true;
         const loadedHoldToRecordKey = (settings.holdToRecordKey as HoldToRecordKey) || 'LeftAlt';
         const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? true;
+        const loadedWakeWordEnabled = settings.wakeWordEnabled ?? false;
+        const loadedWakeWordKeyword = settings.wakeWordKeyword || 'hey_jarvis';
+        const loadedWakeWordThreshold = settings.wakeWordThreshold ?? 0.5;
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -296,6 +326,9 @@ export function SettingsPage() {
         setHoldToRecordEnabled(loadedHoldToRecordEnabled);
         setHoldToRecordKey(loadedHoldToRecordKey);
         setAutoPasteEnabled(loadedAutoPasteEnabled);
+        setWakeWordEnabled(loadedWakeWordEnabled);
+        setWakeWordKeyword(loadedWakeWordKeyword);
+        setWakeWordThreshold(loadedWakeWordThreshold);
 
         // Store initial settings for unsaved changes comparison
         initialSettingsRef.current = {
@@ -317,6 +350,9 @@ export function SettingsPage() {
           holdToRecordEnabled: loadedHoldToRecordEnabled,
           holdToRecordKey: loadedHoldToRecordKey,
           autoPasteEnabled: loadedAutoPasteEnabled,
+          wakeWordEnabled: loadedWakeWordEnabled,
+          wakeWordKeyword: loadedWakeWordKeyword,
+          wakeWordThreshold: loadedWakeWordThreshold,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -408,6 +444,9 @@ export function SettingsPage() {
         holdToRecordEnabled,
         holdToRecordKey,
         autoPasteEnabled,
+        wakeWordEnabled,
+        wakeWordKeyword,
+        wakeWordThreshold,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -430,6 +469,9 @@ export function SettingsPage() {
           holdToRecordEnabled,
           holdToRecordKey,
           autoPasteEnabled,
+          wakeWordEnabled,
+          wakeWordKeyword,
+          wakeWordThreshold,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -756,6 +798,80 @@ export function SettingsPage() {
                 After transcription, simulate ⌘V / Ctrl+V into the active window. Requires Accessibility permission on macOS.
               </span>
             </div>
+
+            <div className="settings-field">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={wakeWordEnabled}
+                  onChange={(e) => setWakeWordEnabled(e.target.checked)}
+                />
+                <span>Wake word (always-listening)</span>
+              </label>
+              <span className="settings-hint">
+                Continuously listen for a keyword and start recording on detection. Uses openWakeWord ONNX models.
+              </span>
+            </div>
+
+            {wakeWordEnabled && (
+              <>
+                <div className="settings-field">
+                  <label>Keyword</label>
+                  <select
+                    value={wakeWordKeyword}
+                    onChange={(e) => setWakeWordKeyword(e.target.value)}
+                    className="settings-select"
+                  >
+                    {wakeWordModels.length === 0 && (
+                      <option value={wakeWordKeyword}>{wakeWordKeyword}</option>
+                    )}
+                    {wakeWordModels.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.label}{m.isBuiltin ? '' : ' (custom)'}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="settings-hint">
+                    Drop additional .onnx models into the Models folder to extend this list.
+                  </span>
+                </div>
+
+                <div className="settings-field">
+                  <label>Detection threshold: {wakeWordThreshold.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="0.95"
+                    step="0.05"
+                    value={wakeWordThreshold}
+                    onChange={(e) => setWakeWordThreshold(parseFloat(e.target.value))}
+                    className="settings-range"
+                  />
+                  <span className="settings-hint">
+                    Higher = fewer false positives but more missed wakes. 0.5 is a sane default.
+                  </span>
+                </div>
+
+                <div className="settings-field">
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      className="settings-btn settings-btn-secondary"
+                      onClick={() => window.electronAPI.openWakeWordFolder?.()}
+                      type="button"
+                    >
+                      Open Models Folder
+                    </button>
+                    <button
+                      className="settings-btn settings-btn-secondary"
+                      onClick={() => void loadWakeWordModels()}
+                      type="button"
+                    >
+                      Reload List
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="settings-field">
               <button

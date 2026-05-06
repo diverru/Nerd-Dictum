@@ -18,7 +18,7 @@
     "dev:mac:logs": "mkdir -p .dev3/tmp && touch .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log && tail -n 200 -f ~/Library/Logs/Nerd\\ Dictum/main.log .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log",
     "dev:mac:tmux": "if [ -n \"$TMUX\" ]; then tmux split-window -v -c \"$PWD\" 'bun run dev:mac:logs'; tmux select-layout even-vertical; fi && bun run dev:mac",
     "build": "bun run build:main && bun run build:preload && vite build",
-    "build:main": "bun build src/main/main.ts --outdir dist/main --target node --external electron",
+    "build:main": "bun build src/main/main.ts --outdir dist/main --target node --external electron --external onnxruntime-node --external @picovoice/pvrecorder-node",
     "build:preload": "bun build src/preload/preload.ts --outdir dist/preload --target node --external electron --format cjs",
     "test": "bun test",
     "test:e2e": "playwright test",
@@ -77,8 +77,8 @@
         "NSAppleEventsUsageDescription": "Nerd Dictum needs to send a paste keystroke (⌘V) so the transcript appears at your cursor."
       },
       "notarize": true,
-      "singleArchFiles": "**/uiohook-napi/**/*.{node,dylib}",
-      "x64ArchFiles": "**/uiohook-napi/**/*.{node,dylib}"
+      "singleArchFiles": "**/{uiohook-napi,onnxruntime-node,@picovoice/pvrecorder-node}/**/*.{node,dylib}",
+      "x64ArchFiles": "**/{uiohook-napi,onnxruntime-node,@picovoice/pvrecorder-node}/**/*.{node,dylib}"
     },
     "win": {
       "target": [
@@ -118,8 +118,10 @@
     "wait-on": "^9.0.3"
   },
   "dependencies": {
+    "@picovoice/pvrecorder-node": "^1.2.8",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.7.3",
+    "onnxruntime-node": "^1.25.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "uiohook-napi": "^1.5.5"

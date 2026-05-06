@@ -12,6 +12,7 @@ import { captureCurrentClipboard, addTranscriptionToHistory, restoreClipboardEnt
 import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts } from './transcript-history';
 import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from './stats';
 import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
+import { startWakeWord, stopWakeWord, listAvailableModels as listWakeWordModels, customModelsDir as wakeWordCustomDir } from './wake-word';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -127,6 +128,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   holdToRecordEnabled: true,
   holdToRecordKey: 'LeftAlt',
   autoPasteEnabled: true,
+  wakeWordEnabled: false,
+  wakeWordKeyword: 'hey_jarvis',
+  wakeWordThreshold: 0.5,
 };
 
 function getSettingsPath(): string {
@@ -892,6 +896,29 @@ function setupHoldToRecord() {
   }
 }
 
+async function setupWakeWord() {
+  await stopWakeWord();
+  if (!appSettings.wakeWordEnabled) {
+    log('[WakeWord] Disabled');
+    return;
+  }
+  const ok = await startWakeWord({
+    keyword: appSettings.wakeWordKeyword,
+    threshold: appSettings.wakeWordThreshold,
+    onDetect: ({ keyword, probability }) => {
+      log(`[WakeWord] Triggered: ${keyword} (p=${probability.toFixed(3)}) — starting recording`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('start-recording');
+      }
+    },
+    onError: (error) => {
+      log('[WakeWord] Error:', error.message);
+    },
+    onLog: (message) => log(message),
+  });
+  log(`[WakeWord] setup ok=${ok} keyword=${appSettings.wakeWordKeyword} threshold=${appSettings.wakeWordThreshold}`);
+}
+
 function createApplicationMenu() {
   const isMac = process.platform === 'darwin';
 
@@ -1221,6 +1248,7 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   registerGlobalShortcuts();
+  void setupWakeWord();
 
   // Hide widget if it was permanently hidden in settings
   if (appSettings.widgetHidden && mainWindow) {
@@ -1256,6 +1284,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopKeyboardHook();
+  void stopWakeWord();
   stopHeartbeat();
   if (tray) {
     tray.destroy();
@@ -1369,6 +1398,16 @@ ipcMain.on('renderer-log', (_event, message: string) => {
   log('[Renderer]', message);
 });
 
+ipcMain.handle('list-wake-word-models', () => {
+  return listWakeWordModels();
+});
+
+ipcMain.handle('open-wake-word-folder', () => {
+  const dir = wakeWordCustomDir();
+  shell.openPath(dir);
+  return dir;
+});
+
 // API key: prefer saved settings, fallback to env var
 ipcMain.handle('get-api-key', () => {
   return appSettings.apiKey || process.env.GEMINI_API_KEY || '';
@@ -1401,6 +1440,9 @@ ipcMain.handle('get-settings', () => {
     holdToRecordEnabled: appSettings.holdToRecordEnabled,
     holdToRecordKey: appSettings.holdToRecordKey,
     autoPasteEnabled: appSettings.autoPasteEnabled,
+    wakeWordEnabled: appSettings.wakeWordEnabled,
+    wakeWordKeyword: appSettings.wakeWordKeyword,
+    wakeWordThreshold: appSettings.wakeWordThreshold,
   };
 });
 
@@ -1409,6 +1451,9 @@ ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
   const oldWidgetHidden = appSettings.widgetHidden;
   const oldHoldToRecordEnabled = appSettings.holdToRecordEnabled;
   const oldHoldToRecordKey = appSettings.holdToRecordKey;
+  const oldWakeWordEnabled = appSettings.wakeWordEnabled;
+  const oldWakeWordKeyword = appSettings.wakeWordKeyword;
+  const oldWakeWordThreshold = appSettings.wakeWordThreshold;
   appSettings = { ...appSettings, ...settings };
   const result = saveSettings(appSettings);
 
@@ -1424,6 +1469,15 @@ ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
     (settings.holdToRecordKey !== undefined && settings.holdToRecordKey !== oldHoldToRecordKey);
   if (holdToRecordChanged) {
     setupHoldToRecord();
+  }
+
+  // Restart wake-word service if its settings changed
+  const wakeWordChanged =
+    (settings.wakeWordEnabled !== undefined && settings.wakeWordEnabled !== oldWakeWordEnabled) ||
+    (settings.wakeWordKeyword !== undefined && settings.wakeWordKeyword !== oldWakeWordKeyword) ||
+    (settings.wakeWordThreshold !== undefined && settings.wakeWordThreshold !== oldWakeWordThreshold);
+  if (wakeWordChanged) {
+    void setupWakeWord();
   }
 
   // Show/hide widget if widgetHidden setting changed

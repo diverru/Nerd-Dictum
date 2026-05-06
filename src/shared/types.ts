@@ -27,6 +27,12 @@ export interface AppSettings {
   holdToRecordEnabled: boolean;
   holdToRecordKey: HoldToRecordKey;
   autoPasteEnabled: boolean;
+  wakeWordEnabled: boolean;
+  // Either a built-in name ("hey_jarvis", "alexa", "hey_mycroft") OR a
+  // filename (without extension) of a custom .onnx model that lives in
+  // <userData>/wake-words/.
+  wakeWordKeyword: string;
+  wakeWordThreshold: number;
 }
 
 export interface DailyStats {
