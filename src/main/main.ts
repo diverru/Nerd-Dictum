@@ -1408,6 +1408,46 @@ ipcMain.handle('open-wake-word-folder', () => {
   return dir;
 });
 
+ipcMain.handle('list-gemini-models', async () => {
+  const apiKey = appSettings.apiKey || process.env.GEMINI_API_KEY || '';
+  if (!apiKey) {
+    return { ok: false, error: 'API key not set', models: [] };
+  }
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      return { ok: false, error: `HTTP ${response.status}`, models: [] };
+    }
+    const data = (await response.json()) as {
+      models?: Array<{
+        name?: string;
+        displayName?: string;
+        description?: string;
+        supportedGenerationMethods?: string[];
+      }>;
+    };
+    const models = (data.models || [])
+      .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
+      .map((m) => {
+        const id = (m.name || '').replace(/^models\//, '');
+        return {
+          id,
+          displayName: m.displayName || id,
+          description: m.description || '',
+        };
+      })
+      .filter((m) => m.id.startsWith('gemini-'))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    log(`[Models] fetched ${models.length} Gemini models`);
+    return { ok: true, models };
+  } catch (error) {
+    const err = error as Error;
+    log(`[Models] fetch failed: ${err.message}`);
+    return { ok: false, error: err.message, models: [] };
+  }
+});
+
 // API key: prefer saved settings, fallback to env var
 ipcMain.handle('get-api-key', () => {
   return appSettings.apiKey || process.env.GEMINI_API_KEY || '';

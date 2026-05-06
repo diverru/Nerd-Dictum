@@ -231,6 +231,10 @@ export function setupElectronAPIMock() {
       console.log('[Mock] Would read file as base64:', filePath);
       return '';
     },
+
+    listGeminiModels: async () => {
+      return { ok: true as const, models: [] };
+    },
   };
 
   // Set up keyboard shortcut for toggle recording (Cmd/Ctrl+Shift+R)

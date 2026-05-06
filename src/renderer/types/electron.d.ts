@@ -14,6 +14,10 @@ export interface ElectronAPI {
   log?: (message: string) => void;
   listWakeWordModels?: () => Promise<Array<{ name: string; label: string; isBuiltin: boolean }>>;
   openWakeWordFolder?: () => Promise<string>;
+  listGeminiModels?: () => Promise<
+    | { ok: true; models: Array<{ id: string; displayName: string; description: string }> }
+    | { ok: false; error: string; models: [] }
+  >;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;
   onToggleRecording: (callback: () => void) => () => void;
