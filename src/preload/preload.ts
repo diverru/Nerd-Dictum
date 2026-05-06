@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   log: (message: string) => ipcRenderer.send('renderer-log', message),
   listWakeWordModels: () => ipcRenderer.invoke('list-wake-word-models'),
   openWakeWordFolder: () => ipcRenderer.invoke('open-wake-word-folder'),
+  listGeminiModels: () => ipcRenderer.invoke('list-gemini-models'),
   getApiKey: () => ipcRenderer.invoke('get-api-key'),
   getModel: () => ipcRenderer.invoke('get-model'),
   onToggleRecording: (callback: () => void) => {
