@@ -6,6 +6,11 @@ bun.lock
 dist/
 release/
 
+# Swift Package Manager (parakeet-bridge)
+swift/.build/
+swift/.swiftpm/
+swift/Package.resolved
+
 # Environment
 .env
 .env.local
