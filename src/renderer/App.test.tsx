@@ -74,6 +74,7 @@ const defaultSettings = {
   widgetHidden: false,
   holdToRecordEnabled: false,
   holdToRecordKey: 'RightMeta' as const,
+  autoPasteEnabled: false,
 };
 
 /**

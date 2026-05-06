@@ -26,6 +26,7 @@ export interface AppSettings {
   widgetHidden: boolean;
   holdToRecordEnabled: boolean;
   holdToRecordKey: HoldToRecordKey;
+  autoPasteEnabled: boolean;
 }
 
 export interface DailyStats {

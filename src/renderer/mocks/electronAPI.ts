@@ -22,6 +22,7 @@ const defaultSettings: AppSettings = {
   widgetHidden: false,
   holdToRecordEnabled: true,
   holdToRecordKey: 'RightMeta',
+  autoPasteEnabled: true,
 };
 
 const defaultStats: StatsWithDerived = {
@@ -52,7 +53,7 @@ export function setupElectronAPIMock() {
   console.log('[Mock] Setting up electronAPI mock for browser development');
 
   window.electronAPI = {
-    copyToClipboard: async (text: string): Promise<boolean> => {
+    copyToClipboard: async (text: string, _autoPaste?: boolean): Promise<boolean> => {
       try {
         await navigator.clipboard.writeText(text);
         console.log('[Mock] Copied to clipboard:', text.substring(0, 50) + '...');

@@ -73,7 +73,8 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "This app needs microphone access to record and transcribe your voice."
+        "NSMicrophoneUsageDescription": "This app needs microphone access to record and transcribe your voice.",
+        "NSAppleEventsUsageDescription": "Nerd Dictum needs to send a paste keystroke (⌘V) so the transcript appears at your cursor."
       },
       "notarize": true,
       "singleArchFiles": "**/uiohook-napi/**/*.{node,dylib}",
