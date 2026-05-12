@@ -22,7 +22,7 @@ const defaultSettings: AppSettings = {
   widgetHidden: false,
   holdToRecordEnabled: true,
   holdToRecordKey: 'RightMeta',
-  autoPasteEnabled: true,
+  autoPasteEnabled: false,
   wakeWordEnabled: false,
   wakeWordKeyword: 'hey_jarvis',
   wakeWordThreshold: 0.5,
@@ -30,6 +30,7 @@ const defaultSettings: AppSettings = {
   transcriptionMode: 'gemini',
   polishProvider: 'google',
   providerConfigs: {},
+  mediaPauseMode: 'duck',
 };
 
 const defaultStats: StatsWithDerived = {

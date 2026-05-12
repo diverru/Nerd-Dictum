@@ -135,6 +135,7 @@ export function SettingsPage() {
   const [customDomainHint, setCustomDomainHint] = useState('');
   const [customKeywords, setCustomKeywords] = useState('');
   const [microphoneDeviceId, setMicrophoneDeviceId] = useState('');
+  const [mediaPauseMode, setMediaPauseMode] = useState<'duck' | 'mute' | 'none'>('duck');
   const [silenceDetectionEnabled, setSilenceDetectionEnabled] = useState(true);
   const [silenceDurationMs, setSilenceDurationMs] = useState(2500);
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
@@ -145,7 +146,7 @@ export function SettingsPage() {
   const [widgetHidden, setWidgetHidden] = useState(false);
   const [holdToRecordEnabled, setHoldToRecordEnabled] = useState(true);
   const [holdToRecordKey, setHoldToRecordKey] = useState<HoldToRecordKey>('LeftAlt');
-  const [autoPasteEnabled, setAutoPasteEnabled] = useState(true);
+  const [autoPasteEnabled, setAutoPasteEnabled] = useState(false);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeWordKeyword, setWakeWordKeyword] = useState<string>('hey_jarvis');
   const [wakeWordThreshold, setWakeWordThreshold] = useState(0.5);
@@ -197,6 +198,7 @@ export function SettingsPage() {
     transcriptionMode: 'gemini' | 'local-then-gemini' | 'local-only';
     polishProvider: LLMProviderId;
     providerConfigs: Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>;
+    mediaPauseMode: 'duck' | 'mute' | 'none';
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -234,7 +236,8 @@ export function SettingsPage() {
       wakeWordPressEnter !== initial.wakeWordPressEnter ||
       transcriptionMode !== initial.transcriptionMode ||
       polishProvider !== initial.polishProvider ||
-      JSON.stringify(providerConfigs) !== JSON.stringify(initial.providerConfigs)
+      JSON.stringify(providerConfigs) !== JSON.stringify(initial.providerConfigs) ||
+      mediaPauseMode !== initial.mediaPauseMode
     );
   }, [
     apiKey,
@@ -262,6 +265,7 @@ export function SettingsPage() {
     transcriptionMode,
     polishProvider,
     providerConfigs,
+    mediaPauseMode,
   ]);
 
   // Load audio devices
@@ -357,7 +361,7 @@ export function SettingsPage() {
         const loadedWidgetHidden = settings.widgetHidden ?? false;
         const loadedHoldToRecordEnabled = settings.holdToRecordEnabled ?? true;
         const loadedHoldToRecordKey = (settings.holdToRecordKey as HoldToRecordKey) || 'LeftAlt';
-        const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? true;
+        const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? false;
         const loadedWakeWordEnabled = settings.wakeWordEnabled ?? false;
         const loadedWakeWordKeyword = settings.wakeWordKeyword || 'hey_jarvis';
         const loadedWakeWordThreshold = settings.wakeWordThreshold ?? 0.5;
@@ -365,6 +369,7 @@ export function SettingsPage() {
         const loadedTranscriptionMode = (settings.transcriptionMode as 'gemini' | 'local-then-gemini' | 'local-only') || 'gemini';
         const loadedPolishProvider = (settings.polishProvider as LLMProviderId) || 'google';
         const loadedProviderConfigs = settings.providerConfigs || {};
+        const loadedMediaPauseMode = (settings.mediaPauseMode as 'duck' | 'mute' | 'none') || 'duck';
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -391,6 +396,7 @@ export function SettingsPage() {
         setTranscriptionMode(loadedTranscriptionMode);
         setPolishProvider(loadedPolishProvider);
         setProviderConfigs(loadedProviderConfigs);
+        setMediaPauseMode(loadedMediaPauseMode);
 
         // Store initial settings for unsaved changes comparison
         initialSettingsRef.current = {
@@ -419,6 +425,7 @@ export function SettingsPage() {
           transcriptionMode: loadedTranscriptionMode,
           polishProvider: loadedPolishProvider,
           providerConfigs: loadedProviderConfigs,
+          mediaPauseMode: loadedMediaPauseMode,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -517,6 +524,7 @@ export function SettingsPage() {
         transcriptionMode,
         polishProvider,
         providerConfigs,
+        mediaPauseMode,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -546,6 +554,7 @@ export function SettingsPage() {
           transcriptionMode,
           polishProvider,
           providerConfigs,
+          mediaPauseMode,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -1026,12 +1035,21 @@ export function SettingsPage() {
                 <input
                   type="checkbox"
                   checked={autoPasteEnabled}
-                  onChange={(e) => setAutoPasteEnabled(e.target.checked)}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setAutoPasteEnabled(next);
+                    // Surface the Accessibility prompt right when the user
+                    // turns this on, instead of silently failing on the
+                    // first paste because permission was never granted.
+                    if (next) {
+                      void window.electronAPI.requestAccessibilityPermission?.();
+                    }
+                  }}
                 />
                 <span>Auto-paste transcript</span>
               </label>
               <span className="settings-hint">
-                After transcription, simulate ⌘V / Ctrl+V into the active window. Requires Accessibility permission on macOS.
+                After transcription, simulate ⌘V / Ctrl+V into the active window. Requires Accessibility permission on macOS — you'll be prompted when enabling.
               </span>
             </div>
 
@@ -1426,6 +1444,23 @@ export function SettingsPage() {
               )}
               <span className="settings-hint">
                 Automatically stop recording after a period of silence
+              </span>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="mediaPauseMode">System audio while recording</label>
+              <select
+                id="mediaPauseMode"
+                value={mediaPauseMode}
+                onChange={(e) => setMediaPauseMode(e.target.value as 'duck' | 'mute' | 'none')}
+                className="settings-select"
+              >
+                <option value="duck">Duck (lower volume)</option>
+                <option value="mute">Mute (instant)</option>
+                <option value="none">Don't touch</option>
+              </select>
+              <span className="settings-hint">
+                "Duck" smoothly lowers the system volume while you record. "Mute" cuts the audio instantly — useful when ducking feels delayed (Bluetooth / AirPlay buffer). "Don't touch" leaves the system volume alone.
               </span>
             </div>
           </>

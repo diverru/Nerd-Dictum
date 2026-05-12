@@ -3,7 +3,7 @@ import './styles/App.css';
 import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS } from '../lib/audio';
 import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
 import { classifyError, ClassifiedError } from '../lib/errors';
-import { playSuccessSound, playErrorSound } from '../lib/sounds';
+import { playStartSound, playSuccessSound, playErrorSound } from '../lib/sounds';
 import { SettingsButton } from './components/Settings';
 import { InfoButton } from './components/InfoButton';
 import { HideButton } from './components/HideButton';
@@ -21,6 +21,28 @@ const MIN_TRANSCRIBE_DURATION_MS = 1000;
 // Keywords baked into the default prompt — used by the renderer to detect
 // when Gemini hallucinated one of them as the whole transcript for silent audio.
 const DEFAULT_KEYWORD_TERMS = ['CLAUDE.md', 'Cloud MD', 'WIX', 'vix'];
+
+// Generic English filler phrases that an offline STT (Parakeet) or the LLM
+// polish step produces when the audio was effectively silent. We treat
+// these as no-speech, with or without trailing punctuation.
+const SILENCE_HALLUCINATION_PHRASES = [
+  'thank you',
+  'thanks',
+  'bye',
+  'goodbye',
+  'hello',
+  'okay',
+  'ok',
+  'mhm',
+];
+
+function isSilenceHallucination(value: string): boolean {
+  // Strip trailing punctuation/whitespace, lowercase, and compare against
+  // the known-bad list. Anything 1-2 word English filler in an otherwise
+  // empty utterance is almost always a hallucination, never the user.
+  const normalised = value.toLowerCase().replace(/[.!?,\s]+$/g, '').trim();
+  return SILENCE_HALLUCINATION_PHRASES.includes(normalised);
+}
 
 function collectKeywordTerms(customKeywords: string | undefined): string[] {
   const terms = new Set<string>(DEFAULT_KEYWORD_TERMS);
@@ -122,6 +144,9 @@ export function App() {
   const audioLevelRef = useRef<number>(0); // For lerp smoothing
   const recorderRef = useRef<AudioRecorder | null>(null);
   const lastAudioRef = useRef<string | null>(null);
+  // Held alongside lastAudioRef so the retry path declares the recorder's
+  // real MIME (opus) instead of falling back to audio/wav.
+  const lastAudioMimeTypeRef = useRef<string | undefined>(undefined);
   const lastRecordingDurationRef = useRef<number>(0); // For stats tracking
   const recordingStartTimeRef = useRef<number>(0); // For tracking recording duration
   const messageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -208,6 +233,7 @@ export function App() {
         window.electronAPI.openSettingsWindow();
         // Save audio for retry after setting API key
         lastAudioRef.current = audioBase64;
+        lastAudioMimeTypeRef.current = mimeType;
         setState('idle');
         return;
       }
@@ -290,6 +316,9 @@ export function App() {
       //   3. Hallucinated a single keyword from the prompt's correction
       //      dictionary — model picks a term it saw in the prompt when
       //      there's nothing to transcribe.
+      //   4. A known generic English filler phrase ("Thank you.", "Bye.",
+      //      etc.) — both Parakeet and the LLM polish are prone to
+      //      spitting one of these out for silent audio.
       const echoesPrevious = trimmed.length > 0 && previousTranscripts.some(
         (prev) => prev.trim() === trimmed
       );
@@ -297,21 +326,24 @@ export function App() {
       const echoesKeyword = trimmed.length > 0 && keywordTerms.some(
         (term) => term.toLowerCase() === trimmed.toLowerCase()
       );
-      if (trimmed.length === 0 || echoesPrevious || echoesKeyword) {
-        if (echoesPrevious || echoesKeyword) {
+      const isHallucination = trimmed.length > 0 && isSilenceHallucination(trimmed);
+      if (trimmed.length === 0 || echoesPrevious || echoesKeyword || isHallucination) {
+        if (echoesPrevious || echoesKeyword || isHallucination) {
           console.warn(
-            `[Transcribe] Treating as empty (likely hallucination). echoesPrevious=${echoesPrevious}, echoesKeyword=${echoesKeyword}, value="${trimmed}"`
+            `[Transcribe] Treating as empty (likely hallucination). echoesPrevious=${echoesPrevious}, echoesKeyword=${echoesKeyword}, isHallucination=${isHallucination}, value="${trimmed}"`
           );
         }
         showMessage('No speech detected', 'error', false);
         window.electronAPI.trackEvent('transcription_empty', {
           echoed_previous: echoesPrevious ? 1 : 0,
           echoed_keyword: echoesKeyword ? 1 : 0,
+          hallucination: isHallucination ? 1 : 0,
         });
         if (soundEnabled) {
           playErrorSound();
         }
         lastAudioRef.current = null;
+        lastAudioMimeTypeRef.current = undefined;
         // Hands-free flow aborted: don't carry the flag into the next session.
         wakeWordTriggeredRef.current = false;
         setState('idle');
@@ -331,26 +363,27 @@ export function App() {
       // Consume the wake-word flag so the next manual recording doesn't
       // inherit the auto-Enter behaviour.
       wakeWordTriggeredRef.current = false;
+      // copyToClipboard now resolves only after the V keystroke has been
+      // dispatched, so the success state below lights up only after the
+      // paste actually lands in the target window.
       await window.electronAPI.copyToClipboard(transcript, true, submitOnPaste);
       if (requestId !== transcribeRequestIdRef.current) {
         return;
       }
+
+      // Flip to success immediately. Side effects (sound, stats, analytics)
+      // run in the background and must not delay the OK indicator.
+      setState('success');
       showMessage('Copied to clipboard', 'success');
-      window.electronAPI.trackEvent('transcription_success', { transcript_length: transcript.length });
-
-      // Record stats for this transcription
-      await window.electronAPI.recordTranscriptionStats(transcript, lastRecordingDurationRef.current);
-
-      // Play success sound if enabled
       if (soundEnabled) {
         playSuccessSound();
       }
+      void window.electronAPI.trackEvent('transcription_success', { transcript_length: transcript.length });
+      void window.electronAPI.recordTranscriptionStats(transcript, lastRecordingDurationRef.current);
 
       // Clear saved audio on success
       lastAudioRef.current = null;
-
-      // Show success state for 5 seconds, then fade to idle
-      setState('success');
+      lastAudioMimeTypeRef.current = undefined;
       if (successTimeoutRef.current) {
         clearTimeout(successTimeoutRef.current);
       }
@@ -384,8 +417,10 @@ export function App() {
       // Save audio for retry only if error is retryable
       if (classified.isRetryable) {
         lastAudioRef.current = audioBase64;
+        lastAudioMimeTypeRef.current = mimeType;
       } else {
         lastAudioRef.current = null;
+        lastAudioMimeTypeRef.current = undefined;
       }
       setState('idle');
     } finally {
@@ -397,7 +432,7 @@ export function App() {
 
   const handleRetry = useCallback(async () => {
     if (lastAudioRef.current && state === 'idle') {
-      await transcribeWithRetry(lastAudioRef.current);
+      await transcribeWithRetry(lastAudioRef.current, lastAudioMimeTypeRef.current);
     }
   }, [state, transcribeWithRetry]);
 
@@ -437,7 +472,11 @@ export function App() {
       // For local STT modes the recorder retained PCM — pull a 16 kHz WAV
       // out alongside the opus blob so the local pipeline has what it wants.
       const wavBase64 = recorderRef.current?.getWavBase64() ?? undefined;
-      await transcribeWithRetry(audioBase64, undefined, wavBase64);
+      // Pass the actual recorder MIME ('audio/webm;codecs=opus') so the
+      // Gemini-direct path declares the real format in the request body.
+      // Without this we were sending opus bytes labelled as audio/wav.
+      const audioMimeType = recorderRef.current?.getMimeType();
+      await transcribeWithRetry(audioBase64, audioMimeType, wavBase64);
     } catch (error) {
       // Recording stop error (too short, etc.)
       showError(error);
@@ -454,6 +493,7 @@ export function App() {
     transcribeAbortRef.current = null;
     transcribeRequestIdRef.current += 1;
     lastAudioRef.current = null;
+    lastAudioMimeTypeRef.current = undefined;
 
     if (controller) {
       controller.abort();
@@ -469,6 +509,7 @@ export function App() {
 
     // Clear any pending retry audio when starting new recording
     lastAudioRef.current = null;
+    lastAudioMimeTypeRef.current = undefined;
     // Clear success timeout if transitioning from success state
     if (successTimeoutRef.current) {
       clearTimeout(successTimeoutRef.current);
@@ -533,6 +574,14 @@ export function App() {
       await recorderRef.current.start();
       console.log('[Recording] Started');
       recordingStartTimeRef.current = Date.now();
+      // Audible confirmation that recording is actually live. Played from
+      // Web Audio in the renderer, so it lands on the AudioContext clock
+      // before the system-volume duck osascript completes — the blip stays
+      // at full volume even after we lowered the master output.
+      const settingsForSound = await window.electronAPI.getSettings();
+      if (settingsForSound.soundEnabled ?? true) {
+        playStartSound();
+      }
       window.electronAPI.trackEvent('recording_start');
       setState('recording');
     } catch (error) {

@@ -82,6 +82,7 @@ const defaultSettings = {
   transcriptionMode: 'gemini' as const,
   polishProvider: 'google' as const,
   providerConfigs: {},
+  mediaPauseMode: 'duck' as const,
 };
 
 /**

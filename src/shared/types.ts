@@ -62,6 +62,11 @@ export interface AppSettings {
   // Per-provider { apiKey, model } for non-Google providers. Switching the
   // active polish provider doesn't erase the other entries.
   providerConfigs: Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>;
+  // What to do with system audio while recording.
+  // 'duck' — lower system volume to RECORDING_VOLUME (default, smooth).
+  // 'mute' — fully mute system output. Lands harder/instant, no fade.
+  // 'none' — leave audio alone. The user manages it manually.
+  mediaPauseMode: 'duck' | 'mute' | 'none';
 }
 
 export interface DailyStats {

@@ -240,7 +240,9 @@ describe('AudioRecorder', () => {
 
     it('should return base64-encoded WAV data on successful recording', async () => {
       const { deps, mockContext } = createMockDeps();
-      const recorder = new AudioRecorder(deps);
+      // stop() now returns opus base64, so route through retainPcmForWav
+      // + getWavBase64() to keep this assertion meaningful.
+      const recorder = new AudioRecorder(deps, { retainPcmForWav: true });
 
       await recorder.start();
 
@@ -250,14 +252,16 @@ describe('AudioRecorder', () => {
       // Wait for minimum recording time
       await new Promise((resolve) => setTimeout(resolve, MIN_RECORDING_MS + 50));
 
-      const result = await recorder.stop();
+      await recorder.stop();
+      const result = recorder.getWavBase64();
+      expect(result).not.toBeNull();
 
       // Verify result is base64 string
       expect(typeof result).toBe('string');
-      expect(result.length).toBeGreaterThan(0);
+      expect(result!.length).toBeGreaterThan(0);
 
       // Decode base64 and verify WAV header
-      const binaryString = atob(result);
+      const binaryString = atob(result!);
       expect(binaryString.substring(0, 4)).toBe('RIFF');
       expect(binaryString.substring(8, 12)).toBe('WAVE');
     });
@@ -356,7 +360,7 @@ describe('AudioRecorder', () => {
   describe('WAV encoding', () => {
     it('should produce valid WAV format with correct headers', async () => {
       const { deps, mockContext } = createMockDeps();
-      const recorder = new AudioRecorder(deps);
+      const recorder = new AudioRecorder(deps, { retainPcmForWav: true });
 
       await recorder.start();
 
@@ -365,8 +369,10 @@ describe('AudioRecorder', () => {
 
       await new Promise((resolve) => setTimeout(resolve, MIN_RECORDING_MS + 50));
 
-      const result = await recorder.stop();
-      const binary = atob(result);
+      await recorder.stop();
+      const result = recorder.getWavBase64();
+      expect(result).not.toBeNull();
+      const binary = atob(result!);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
@@ -396,7 +402,7 @@ describe('AudioRecorder', () => {
 
     it('should encode audio samples as 16-bit PCM', async () => {
       const { deps, mockContext } = createMockDeps();
-      const recorder = new AudioRecorder(deps);
+      const recorder = new AudioRecorder(deps, { retainPcmForWav: true });
 
       await recorder.start();
 
@@ -406,8 +412,10 @@ describe('AudioRecorder', () => {
 
       await new Promise((resolve) => setTimeout(resolve, MIN_RECORDING_MS + 50));
 
-      const result = await recorder.stop();
-      const binary = atob(result);
+      await recorder.stop();
+      const result = recorder.getWavBase64();
+      expect(result).not.toBeNull();
+      const binary = atob(result!);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
@@ -433,7 +441,7 @@ describe('AudioRecorder', () => {
       // Create context with different sample rate
       const mockContext = createMockAudioContext(48000);
       const { deps } = createMockDeps(undefined, mockContext);
-      const recorder = new AudioRecorder(deps);
+      const recorder = new AudioRecorder(deps, { retainPcmForWav: true });
 
       await recorder.start();
 
@@ -448,8 +456,10 @@ describe('AudioRecorder', () => {
 
       await new Promise((resolve) => setTimeout(resolve, MIN_RECORDING_MS + 50));
 
-      const result = await recorder.stop();
-      const binary = atob(result);
+      await recorder.stop();
+      const result = recorder.getWavBase64();
+      expect(result).not.toBeNull();
+      const binary = atob(result!);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);

@@ -55,6 +55,25 @@ function log(...args: unknown[]): void {
   electronLog.info(...args);
 }
 
+// Configure undici (Node's built-in HTTP client used by global fetch) with a
+// keep-alive pool and aggressive timeouts. Without this, idle connections
+// silently rot in the pool (intermediary kills them after a few minutes)
+// and the next fetch hangs on a dead socket for ~10s before timing out.
+// Keep-alive + short connect/headers timeouts means we either get a fresh
+// healthy connection fast, or fail fast and let the caller retry.
+import { Agent, setGlobalDispatcher } from 'undici';
+setGlobalDispatcher(
+  new Agent({
+    keepAliveTimeout: 30_000,        // recycle idle conns after 30s
+    keepAliveMaxTimeout: 300_000,    // hard cap so very old conns get rotated
+    connect: { timeout: 3_000 },     // TCP + TLS handshake budget
+    headersTimeout: 5_000,           // wait at most 5s for response headers
+    bodyTimeout: 60_000,             // long enough for a slow LLM stream
+    pipelining: 1,
+  }),
+);
+log('[net] undici Agent configured: keep-alive, 3s connect / 5s headers / 60s body');
+
 // Wrap globalThis.fetch so we can see every outgoing HTTP call the AI SDK
 // (or any other library in main) makes — useful when polish is slow and we
 // want to know whether the SDK is retrying on 4xx/5xx behind our backs.
@@ -90,53 +109,110 @@ let savedVolume: number | null = null;
 const RECORDING_VOLUME = 10; // Lower volume to 10% during recording
 
 // Lower system volume during recording (macOS)
+// Tracks which action the most recent pause took, so resume reverts the
+// matching thing even if the user changed the mode mid-recording.
+type MediaPauseAction = 'duck' | 'mute' | null;
+let pauseActionTaken: MediaPauseAction = null;
+
 function pauseMediaPlayback(): void {
   if (process.platform !== 'darwin') return;
+  const mode = appSettings.mediaPauseMode ?? 'duck';
+  if (mode === 'none') return;
+  if (mode === 'mute') {
+    pauseViaMute();
+  } else {
+    pauseViaDuck();
+  }
+}
 
-  // Get current volume and lower it
-  exec(`osascript -e 'output volume of (get volume settings)'`, (error, stdout) => {
+function pauseViaDuck(): void {
+  const t0 = Date.now();
+  // Single chained osascript that reads the current volume AND lowers it
+  // in one shot. Splitting this into two `exec` calls cost ~600ms because
+  // each osascript spawn pays its own startup tax; the chained form is
+  // ~half that (one process, one System Events handshake).
+  const script =
+    `set savedVol to output volume of (get volume settings)\n` +
+    `if savedVol > ${RECORDING_VOLUME} then set volume output volume ${RECORDING_VOLUME}\n` +
+    `return savedVol`;
+  exec(`osascript -e '${script.replace(/\n/g, "' -e '")}'`, (error, stdout) => {
     if (error) {
-      log('[Media] Error getting volume:', error.message);
+      log('[Media] Error ducking volume:', error.message);
       return;
     }
-
     const currentVolume = parseInt(stdout.trim(), 10);
     if (isNaN(currentVolume)) {
       log('[Media] Could not parse volume:', stdout);
       return;
     }
-
-    // Only save and lower if volume is above our recording threshold
     if (currentVolume > RECORDING_VOLUME) {
       savedVolume = currentVolume;
-      exec(`osascript -e 'set volume output volume ${RECORDING_VOLUME}'`, (err) => {
-        if (err) {
-          log('[Media] Error setting volume:', err.message);
-          savedVolume = null;
-          return;
-        }
-        log('[Media] Volume lowered from', currentVolume, 'to', RECORDING_VOLUME);
-      });
+      pauseActionTaken = 'duck';
+      log(`[Media] Volume lowered from ${currentVolume} to ${RECORDING_VOLUME} in ${Date.now() - t0}ms`);
     } else {
-      log('[Media] Volume already low:', currentVolume);
+      log(`[Media] Volume already low (${currentVolume}) in ${Date.now() - t0}ms`);
     }
   });
 }
 
-// Restore system volume after recording (macOS)
+function pauseViaMute(): void {
+  const t0 = Date.now();
+  // Read prior mute state, then mute if not already. We only restore on
+  // resume if WE set the mute — otherwise the user's pre-existing mute
+  // state survives the recording.
+  const script =
+    `set wasMuted to output muted of (get volume settings)\n` +
+    `if not wasMuted then set volume output muted true\n` +
+    `return wasMuted`;
+  exec(`osascript -e '${script.replace(/\n/g, "' -e '")}'`, (error, stdout) => {
+    if (error) {
+      log('[Media] Error muting:', error.message);
+      return;
+    }
+    const wasMuted = stdout.trim() === 'true';
+    if (!wasMuted) {
+      pauseActionTaken = 'mute';
+      log(`[Media] Muted in ${Date.now() - t0}ms`);
+    } else {
+      log(`[Media] Already muted in ${Date.now() - t0}ms`);
+    }
+  });
+}
+
+// Restore system audio after recording (macOS).
 function resumeMediaPlayback(): void {
   if (process.platform !== 'darwin') return;
-  if (savedVolume === null) return;
+  const action = pauseActionTaken;
+  pauseActionTaken = null;
+  if (action === 'duck') {
+    resumeFromDuck();
+  } else if (action === 'mute') {
+    resumeFromMute();
+  }
+  // action === null: nothing to restore (mode was 'none', or pause skipped
+  // because the system was already in the desired state).
+}
 
+function resumeFromDuck(): void {
+  if (savedVolume === null) return;
   const volumeToRestore = savedVolume;
   savedVolume = null;
-
   exec(`osascript -e 'set volume output volume ${volumeToRestore}'`, (error) => {
     if (error) {
       log('[Media] Error restoring volume:', error.message);
       return;
     }
     log('[Media] Volume restored to', volumeToRestore);
+  });
+}
+
+function resumeFromMute(): void {
+  exec(`osascript -e 'set volume output muted false'`, (error) => {
+    if (error) {
+      log('[Media] Error unmuting:', error.message);
+      return;
+    }
+    log('[Media] Unmuted');
   });
 }
 
@@ -160,7 +236,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   widgetHidden: false,
   holdToRecordEnabled: true,
   holdToRecordKey: 'LeftAlt',
-  autoPasteEnabled: true,
+  autoPasteEnabled: false,
   wakeWordEnabled: false,
   wakeWordKeyword: 'hey_jarvis',
   wakeWordThreshold: 0.5,
@@ -168,6 +244,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   transcriptionMode: 'gemini',
   polishProvider: 'google',
   providerConfigs: {},
+  mediaPauseMode: 'duck',
 };
 
 function getSettingsPath(): string {
@@ -659,19 +736,6 @@ function createWindow() {
   });
 }
 
-function getIconPath(): string {
-  // Use Template suffix on macOS for proper menu bar appearance
-  const iconName = process.platform === 'darwin' ? 'tray-iconTemplate.png' : 'tray-icon.png';
-
-  if (!app.isPackaged) {
-    // In development, assets are in project root
-    return path.join(app.getAppPath(), 'assets', iconName);
-  } else {
-    // In production, assets are in resources folder
-    return path.join(process.resourcesPath, 'assets', iconName);
-  }
-}
-
 function getAppIconPath(): string {
   if (!app.isPackaged) {
     // In development, use the icon from build folder
@@ -682,41 +746,67 @@ function getAppIconPath(): string {
   }
 }
 
-function createTray() {
-  const iconPath = getIconPath();
-  let icon = nativeImage.createFromPath(iconPath);
+// "ND" monogram glyph — 11 cols × 9 rows. 'X' = filled pixel. Composed of
+// a 5×9 'N' (with diagonal stroke) + 1px gap + 5×9 'D' (closed-rectangle
+// stylisation that reads as 'D' at small sizes). Designed to sit
+// centered in a 16×16 menu-bar canvas with 2-3px padding on all sides;
+// rendered as a template image on macOS so it auto-adapts to dark/light
+// menubars.
+const ND_GLYPH = [
+  'X...X.XXXXX',
+  'XX..X.X...X',
+  'XX..X.X...X',
+  'X.X.X.X...X',
+  'X.X.X.X...X',
+  'X..XX.X...X',
+  'X..XX.X...X',
+  'X...X.X...X',
+  'X...X.XXXXX',
+];
 
-  // If icon failed to load, create a simple 16x16 icon programmatically
-  if (icon.isEmpty()) {
-    // Create a simple 16x16 white circle on transparent background
-    const size = 16;
-    const canvas = Buffer.alloc(size * size * 4); // RGBA
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const idx = (y * size + x) * 4;
-        const cx = size / 2, cy = size / 2, r = 6;
-        const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
-        if (dist <= r) {
-          canvas[idx] = 255;     // R
-          canvas[idx + 1] = 255; // G
-          canvas[idx + 2] = 255; // B
-          canvas[idx + 3] = 255; // A
-        } else {
-          canvas[idx + 3] = 0;   // Transparent
+function rasteriseGlyph(glyph: string[], canvasSize: number, scale: number): Buffer {
+  const glyphHeight = glyph.length;
+  const glyphWidth = glyph[0].length;
+  const offsetX = Math.floor((canvasSize - glyphWidth * scale) / 2);
+  const offsetY = Math.floor((canvasSize - glyphHeight * scale) / 2);
+  const buffer = Buffer.alloc(canvasSize * canvasSize * 4);
+  for (let r = 0; r < glyphHeight; r++) {
+    for (let c = 0; c < glyphWidth; c++) {
+      if (glyph[r][c] !== 'X') continue;
+      for (let dy = 0; dy < scale; dy++) {
+        for (let dx = 0; dx < scale; dx++) {
+          const px = offsetX + c * scale + dx;
+          const py = offsetY + r * scale + dy;
+          if (px < 0 || py < 0 || px >= canvasSize || py >= canvasSize) continue;
+          const idx = (py * canvasSize + px) * 4;
+          buffer[idx] = 0;       // R
+          buffer[idx + 1] = 0;   // G
+          buffer[idx + 2] = 0;   // B
+          buffer[idx + 3] = 255; // A
         }
       }
     }
-    icon = nativeImage.createFromBuffer(canvas, { width: size, height: size });
   }
+  return buffer;
+}
 
-  // Mark as template image on macOS for proper dark/light mode handling
+function buildTrayIcon(): Electron.NativeImage {
+  // Base 16×16 representation, plus a 32×32 rep flagged as @2x so retina
+  // displays render the bitmap natively crisp instead of scaling 16→32.
+  const small = rasteriseGlyph(ND_GLYPH, 16, 1);
+  const large = rasteriseGlyph(ND_GLYPH, 32, 2);
+  const icon = nativeImage.createFromBuffer(small, { width: 16, height: 16 });
+  icon.addRepresentation({ width: 32, height: 32, scaleFactor: 2.0, buffer: large });
   if (process.platform === 'darwin') {
     icon.setTemplateImage(true);
   }
+  return icon;
+}
 
+function createTray() {
+  const icon = buildTrayIcon();
   tray = new Tray(icon);
   updateTrayTooltip();
-
   updateTrayMenu();
 }
 
@@ -879,6 +969,10 @@ function registerGlobalShortcuts() {
 
   const registered = globalShortcut.register(hotkey, () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
+      // Duck system volume immediately. If the toggle is actually a STOP
+      // (already low), the chained osascript no-ops in ~150ms with no harm
+      // — savedVolume is only overwritten when currentVolume > threshold.
+      pauseMediaPlayback();
       mainWindow.webContents.send('toggle-recording');
     }
   });
@@ -915,6 +1009,13 @@ function setupHoldToRecord() {
       onKeyDown: () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           log('[HoldToRecord] Key down, starting recording');
+          // Duck the system volume IMMEDIATELY here, not via the renderer's
+          // start-recording flow. By the time the renderer receives the IPC,
+          // calls getUserMedia, and bounces a `pause-media` IPC back, ~600ms+
+          // has elapsed — long enough that the user's music keeps blasting
+          // into the start of the recording. Doing it inline saves the
+          // round-trip and the React/audio-worklet wakeup tax.
+          pauseMediaPlayback();
           // hold-key-down is observed by the renderer to suppress
           // silence-detection auto-stop while the key is physically held.
           mainWindow.webContents.send('hold-key-down');
@@ -952,6 +1053,9 @@ async function setupWakeWord() {
     onDetect: ({ keyword, probability }) => {
       log(`[WakeWord] Triggered: ${keyword} (p=${probability.toFixed(3)}) — starting recording`);
       if (mainWindow && !mainWindow.isDestroyed()) {
+        // Same reasoning as the hold-to-record path: duck volume in main
+        // before the IPC roundtrip so the recording's start isn't drowned.
+        pauseMediaPlayback();
         // Order matters: renderer must see wake-word-triggered before
         // start-recording so it can flag the upcoming session as hands-free.
         mainWindow.webContents.send('wake-word-triggered');
@@ -1363,7 +1467,7 @@ app.on('activate', () => {
 });
 
 // IPC handlers
-ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pressEnterAfter = false) => {
+ipcMain.handle('copy-to-clipboard', async (_event, text: string, autoPaste = false, pressEnterAfter = false) => {
   log('[Clipboard] Copying transcript (' + text.length + ' chars):', text);
   const willAutoPaste = autoPaste && appSettings.autoPasteEnabled;
   // Take a snapshot only when we're about to auto-paste; otherwise the
@@ -1382,7 +1486,11 @@ ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false, pr
 
   if (willAutoPaste) {
     log(`[Clipboard] Auto-paste branch hit — dispatching keystroke (pressEnterAfter=${pressEnterAfter}, hasSnapshot=${restoreSnapshotEntry !== null})`);
-    pasteIntoActiveWindow(pressEnterAfter, restoreSnapshotEntry);
+    // Wait until the V keystroke has actually been dispatched before
+    // returning, so the renderer's "success" state lights up only after
+    // the paste lands — not before. Clipboard restore still happens
+    // asynchronously after the keystroke.
+    await pasteIntoActiveWindow(pressEnterAfter, restoreSnapshotEntry);
   } else {
     log(
       `[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`
@@ -1424,70 +1532,76 @@ function scheduleClipboardRestore(snapshot: ClipboardEntry | null): void {
   }, CLIPBOARD_RESTORE_DELAY_MS);
 }
 
-function pasteIntoActiveWindow(pressEnterAfter = false, restoreSnapshotEntry: ClipboardEntry | null = null): void {
-  if (process.platform === 'darwin') {
-    const trusted = systemPreferences.isTrustedAccessibilityClient(true);
-    log(`[AutoPaste] Accessibility trusted=${trusted}`);
-    if (!trusted) {
-      log('[AutoPaste] Accessibility permission missing — paste will not work until granted');
-      // Without paste we'd still want to leave the transcript on the clipboard
-      // so the user can paste manually — skip the restore in that case.
-      return;
+function pasteIntoActiveWindow(
+  pressEnterAfter = false,
+  restoreSnapshotEntry: ClipboardEntry | null = null,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (process.platform === 'darwin') {
+      const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+      log(`[AutoPaste] Accessibility trusted=${trusted}`);
+      if (!trusted) {
+        log('[AutoPaste] Accessibility permission missing — paste will not work until granted');
+        // Without paste we leave the transcript on the clipboard so the user
+        // can paste manually; skip restore. Resolve immediately so the
+        // success state still flips.
+        resolve();
+        return;
+      }
+      // Small delay so the source window can regain focus and the clipboard
+      // write is observable to the destination.
+      setTimeout(() => {
+        const clipNow = clipboard.readText();
+        log(
+          `[AutoPaste] pre-keystroke: clipboard.length=${clipNow.length} clipboard="${clipNow.replace(/\n/g, '\\n')}"`,
+        );
+        exec(
+          `osascript -e 'tell application "System Events" to set frontApp to name of first application process whose frontmost is true' -e 'return frontApp'`,
+          (frontErr, frontStdout) => {
+            const frontApp = frontStdout?.trim() || '(unknown)';
+            log(`[AutoPaste] frontmost app at paste time: "${frontApp}"${frontErr ? ` (err: ${frontErr.message})` : ''}`);
+            const script = pressEnterAfter
+              ? `tell application "System Events" to key code 9 using command down\ndelay 0.25\ntell application "System Events" to key code 36`
+              : `tell application "System Events" to key code 9 using command down`;
+            log(`[AutoPaste] osascript dispatch (pressEnterAfter=${pressEnterAfter})`);
+            exec(
+              `osascript -e '${script.replace(/\n/g, "' -e '")}'`,
+              (error, _stdout, stderr) => {
+                if (error) {
+                  log('[AutoPaste] Failed:', error.message, '| stderr:', stderr);
+                } else {
+                  log('[AutoPaste] keystroke dispatched OK');
+                }
+                scheduleClipboardRestore(restoreSnapshotEntry);
+                resolve();
+              },
+            );
+          },
+        );
+      }, 50);
+    } else if (process.platform === 'win32') {
+      setTimeout(() => {
+        const keys = pressEnterAfter ? '^v{ENTER}' : '^v';
+        const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
+        exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {
+          if (error) log('[AutoPaste] Failed:', error.message);
+          scheduleClipboardRestore(restoreSnapshotEntry);
+          resolve();
+        });
+      }, 50);
+    } else {
+      setTimeout(() => {
+        const cmd = pressEnterAfter
+          ? 'xdotool key --clearmodifiers ctrl+v && sleep 0.25 && xdotool key --clearmodifiers Return'
+          : 'xdotool key --clearmodifiers ctrl+v';
+        exec(cmd, (error) => {
+          if (error) log('[AutoPaste] xdotool not available or failed:', error.message);
+          scheduleClipboardRestore(restoreSnapshotEntry);
+          resolve();
+        });
+      }, 50);
     }
-    // Small delay so the source window can regain focus and the clipboard
-    // write is observable to the destination.
-    setTimeout(() => {
-      const clipNow = clipboard.readText();
-      log(
-        `[AutoPaste] pre-keystroke: clipboard.length=${clipNow.length} clipboard="${clipNow.replace(/\n/g, '\\n')}"`
-      );
-      exec(
-        `osascript -e 'tell application "System Events" to set frontApp to name of first application process whose frontmost is true' -e 'return frontApp'`,
-        (frontErr, frontStdout) => {
-          const frontApp = frontStdout?.trim() || '(unknown)';
-          log(`[AutoPaste] frontmost app at paste time: "${frontApp}"${frontErr ? ` (err: ${frontErr.message})` : ''}`);
-          // Chain V + (optionally) Enter into a single osascript invocation
-          // with a short delay between them. If we exec'd two separate
-          // osascripts, Enter could land before V finished pasting and the
-          // form would submit empty.
-          const script = pressEnterAfter
-            ? `tell application "System Events" to key code 9 using command down\ndelay 0.25\ntell application "System Events" to key code 36`
-            : `tell application "System Events" to key code 9 using command down`;
-          log(`[AutoPaste] osascript dispatch (pressEnterAfter=${pressEnterAfter})`);
-          exec(
-            `osascript -e '${script.replace(/\n/g, "' -e '")}'`,
-            (error, _stdout, stderr) => {
-              if (error) {
-                log('[AutoPaste] Failed:', error.message, '| stderr:', stderr);
-              } else {
-                log('[AutoPaste] keystroke dispatched OK');
-              }
-              scheduleClipboardRestore(restoreSnapshotEntry);
-            }
-          );
-        }
-      );
-    }, 50);
-  } else if (process.platform === 'win32') {
-    setTimeout(() => {
-      const keys = pressEnterAfter ? '^v{ENTER}' : '^v';
-      const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
-      exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {
-        if (error) log('[AutoPaste] Failed:', error.message);
-        scheduleClipboardRestore(restoreSnapshotEntry);
-      });
-    }, 50);
-  } else {
-    setTimeout(() => {
-      const cmd = pressEnterAfter
-        ? 'xdotool key --clearmodifiers ctrl+v && sleep 0.25 && xdotool key --clearmodifiers Return'
-        : 'xdotool key --clearmodifiers ctrl+v';
-      exec(cmd, (error) => {
-        if (error) log('[AutoPaste] xdotool not available or failed:', error.message);
-        scheduleClipboardRestore(restoreSnapshotEntry);
-      });
-    }, 50);
-  }
+  });
 }
 
 // Forward arbitrary log lines from the renderer process into the unified
@@ -1688,6 +1802,7 @@ ipcMain.handle('get-settings', () => {
     transcriptionMode: appSettings.transcriptionMode,
     polishProvider: appSettings.polishProvider,
     providerConfigs: appSettings.providerConfigs,
+    mediaPauseMode: appSettings.mediaPauseMode,
   };
 });
 
@@ -1771,6 +1886,17 @@ ipcMain.handle('get-microphone-permission-status', () => {
 
 ipcMain.handle('request-microphone-permission', async () => {
   return requestMicrophonePermission();
+});
+
+// Triggers the macOS Accessibility permission prompt up-front, so the user
+// sees the system dialog the moment they opt in to auto-paste — instead of
+// finding out the first paste silently failed because permission was never
+// granted. Resolves to the current trust state after the prompt.
+ipcMain.handle('request-accessibility-permission', () => {
+  if (process.platform !== 'darwin') return true;
+  const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+  log(`[Accessibility] request prompt → trusted=${trusted}`);
+  return trusted;
 });
 
 // Open external URL in default browser

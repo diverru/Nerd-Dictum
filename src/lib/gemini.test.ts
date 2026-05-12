@@ -134,7 +134,7 @@ describe('transcribeAudio', () => {
       { customKeywords: 'Bun = bull, b u n\nTypeScript' }
     );
 
-    expect(capturedPrompt).toContain('User keywords and corrections:');
+    expect(capturedPrompt).toContain('Spelling-correction dictionary');
     expect(capturedPrompt).toContain('- Bun (aliases: bull, b u n)');
     expect(capturedPrompt).toContain('- TypeScript');
   });

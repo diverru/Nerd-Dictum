@@ -70,6 +70,9 @@ function buildKeywordsSection(customKeywords?: string): string {
 function buildPolishPrompt(rawTranscript: string, options?: PolishOptions): string {
   let prompt = `You are polishing a raw transcript produced by an offline speech-to-text model. Fix obvious recognition errors, restore punctuation, normalize casing of technical terms, and produce clean readable text. You MUST NOT invent words, add commentary, change meaning, or expand abbreviations the speaker did not say. If the raw transcript is empty or whitespace-only, return the empty string.
 
+KNOWN-EMPTY HALLUCINATIONS:
+The offline STT this transcript came from has a documented failure mode where it emits a generic English filler phrase when the audio is actually silence — most commonly "Thank you" / "Thank you." / "thanks" / "Bye" / "Hello" / "Okay" / "OK". The user is a Russian/English-speaking developer; a standalone single English filler phrase is NEVER what they actually said when dictating real content. If the entire raw transcript is one of these phrases (with or without trailing punctuation, any casing) — return the empty string. Same applies to single-word generic English interjections that don't fit the surrounding language context.
+
 CRITICAL — preserve original-language technical terms:
 - The speaker code-switches between Russian and English. English technical terms MUST stay in English Latin script. NEVER translate them to Russian and NEVER transliterate them in Cyrillic.
 - Common offline-STT failure mode: an English word spoken in a Russian sentence gets written in Cyrillic (e.g. "пекедж", "коммит", "реквест", "пуш", "рендер"). Restore the original English spelling: "package", "commit", "request", "push", "render".
@@ -100,26 +103,40 @@ CRITICAL — preserve original-language technical terms:
   return prompt;
 }
 
+// Per-fetch hard deadline for LLM calls. Without this a stuck TCP connection
+// (dead peer in undici's pool, slow DNS, TLS handshake reset by an
+// intermediary) can hang for 10+ seconds before undici's default connect
+// timeout fires, silently inflating polish latency to 15s+. AI SDK retries
+// once on AbortError, so worst case is now ~5 + 2s backoff + ~1.5s retry
+// ≈ 8.5s. Typical successful call (~1.5s) is unaffected.
+const PER_FETCH_TIMEOUT_MS = 5000;
+
+const timedFetch = ((input: URL | RequestInfo, init?: RequestInit) =>
+  fetch(input as RequestInfo | URL, {
+    ...init,
+    signal: AbortSignal.timeout(PER_FETCH_TIMEOUT_MS),
+  })) as typeof fetch;
+
 function buildModel(provider: LLMProviderId, apiKey: string, modelId: string): LanguageModel {
   switch (provider) {
     case 'google': {
-      const google = createGoogleGenerativeAI({ apiKey });
+      const google = createGoogleGenerativeAI({ apiKey, fetch: timedFetch });
       return google(modelId);
     }
     case 'openai': {
-      const openai = createOpenAI({ apiKey });
+      const openai = createOpenAI({ apiKey, fetch: timedFetch });
       return openai(modelId);
     }
     case 'anthropic': {
-      const anthropic = createAnthropic({ apiKey });
+      const anthropic = createAnthropic({ apiKey, fetch: timedFetch });
       return anthropic(modelId);
     }
     case 'groq': {
-      const groq = createOpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+      const groq = createOpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1', fetch: timedFetch });
       return groq(modelId);
     }
     case 'deepseek': {
-      const deepseek = createOpenAI({ apiKey, baseURL: 'https://api.deepseek.com/v1' });
+      const deepseek = createOpenAI({ apiKey, baseURL: 'https://api.deepseek.com/v1', fetch: timedFetch });
       return deepseek(modelId);
     }
   }

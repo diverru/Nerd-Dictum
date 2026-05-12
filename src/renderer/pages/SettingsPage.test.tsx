@@ -105,7 +105,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change to the model field
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
     // Click Cancel
@@ -130,7 +130,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
     // Click Cancel to show dialog
@@ -158,7 +158,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
     // Click Cancel to show dialog
@@ -179,7 +179,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     expect(mockAPI.closeSettingsWindow).not.toHaveBeenCalled();
 
     // Settings page should still be visible with changes intact
-    expect((screen.getByLabelText('Model') as HTMLInputElement).value).toBe('new-model');
+    expect((screen.getByLabelText('Google (Gemini) model') as HTMLInputElement).value).toBe('new-model');
   });
 
   it('should NOT show dialog after successful Save', async () => {
@@ -208,7 +208,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
     // Click Save
@@ -283,7 +283,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     const originalValue = (modelInput as HTMLInputElement).value;
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
@@ -308,7 +308,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
     // Simulate beforeunload event
@@ -335,7 +335,7 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     });
 
     // Make a change
-    const modelInput = screen.getByLabelText('Model');
+    const modelInput = screen.getByLabelText('Google (Gemini) model');
     fireEvent.change(modelInput, { target: { value: 'new-model' } });
 
     // Click Cancel to show dialog

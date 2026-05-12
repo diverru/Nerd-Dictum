@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeHideWindow: () => ipcRenderer.invoke('close-hide-window'),
   getMicrophonePermissionStatus: () => ipcRenderer.invoke('get-microphone-permission-status'),
   requestMicrophonePermission: () => ipcRenderer.invoke('request-microphone-permission'),
+  requestAccessibilityPermission: () => ipcRenderer.invoke('request-accessibility-permission'),
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   getRecentTranscripts: () => ipcRenderer.invoke('get-recent-transcripts'),
