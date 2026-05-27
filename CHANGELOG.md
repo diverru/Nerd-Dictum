@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-27 (diverru fork)
+
+[2026-05-27] Providers — Added OpenRouter as a sixth polish-step LLM provider, joining Google/OpenAI/Anthropic/Groq/DeepSeek. OpenRouter is OpenAI-API-compatible, so it slots into the existing pluggable-provider machinery via `createOpenAI` with `baseURL: https://openrouter.ai/api/v1`. Model listing uses the same `/models` endpoint and surfaces OpenRouter's human-friendly `name` ("Anthropic: Claude 3.5 Sonnet") instead of just the slug id. Requests carry `HTTP-Referer`/`X-Title` headers for app attribution.
+
 ## 2026-05-06 (diverru fork)
 
 [2026-05-06] Audio — Switched the recorder output format from raw WAV PCM to opus (`audio/webm;codecs=opus`, 24 kbps) for ~10× smaller uploads to Gemini. Optional `retainPcmForWav` flag still produces a 16 kHz mono WAV for downstream local pipelines.

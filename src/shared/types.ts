@@ -11,7 +11,7 @@ export type HoldToRecordKey =
 // Cloud LLM providers used for the Polish step (text → text). The STT step
 // is locked to Google Gemini in `gemini` transcriptionMode and to local
 // Parakeet in the `local-*` modes — only Polish is provider-pluggable.
-export type LLMProviderId = 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek';
+export type LLMProviderId = 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter';
 
 // Per-provider key + model. Stored separately so switching providers does not
 // erase the user's other credentials.

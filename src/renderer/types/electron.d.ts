@@ -19,14 +19,14 @@ export interface ElectronAPI {
     | { ok: false; error: string; models: [] }
   >;
   listProviderModels?: (
-    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek',
+    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter',
     apiKey: string,
   ) => Promise<
     | { ok: true; models: Array<{ id: string; displayName: string }> }
     | { ok: false; error: string; models: [] }
   >;
   polishText?: (
-    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek',
+    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter',
     apiKey: string,
     model: string,
     rawTranscript: string,

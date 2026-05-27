@@ -791,6 +791,7 @@ export function SettingsPage() {
                   <option value="anthropic">Anthropic (Claude)</option>
                   <option value="groq">Groq</option>
                   <option value="deepseek">DeepSeek</option>
+                  <option value="openrouter">OpenRouter</option>
                 </select>
                 <span className="settings-hint">
                   Which cloud model polishes the raw Parakeet transcript. Each provider keeps its own API key and model, persisted across switches.
@@ -858,6 +859,7 @@ export function SettingsPage() {
                 anthropic: 'Anthropic',
                 groq: 'Groq',
                 deepseek: 'DeepSeek',
+                openrouter: 'OpenRouter',
               } as Record<LLMProviderId, string>)[activeProvider];
               return (
                 <>

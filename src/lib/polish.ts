@@ -139,6 +139,20 @@ function buildModel(provider: LLMProviderId, apiKey: string, modelId: string): L
       const deepseek = createOpenAI({ apiKey, baseURL: 'https://api.deepseek.com/v1', fetch: timedFetch });
       return deepseek(modelId);
     }
+    case 'openrouter': {
+      const openrouter = createOpenAI({
+        apiKey,
+        baseURL: 'https://openrouter.ai/api/v1',
+        fetch: timedFetch,
+        // App attribution — optional, but lets the request show up under
+        // "Nerd Dictum" on openrouter.ai/rankings instead of "Unknown".
+        headers: {
+          'HTTP-Referer': 'https://github.com/diverru/nerd-dictum',
+          'X-Title': 'Nerd Dictum',
+        },
+      });
+      return openrouter(modelId);
+    }
   }
 }
 

@@ -80,7 +80,7 @@ log('[net] undici Agent configured: keep-alive, 3s connect / 5s headers / 60s bo
 // We only log calls to LLM endpoints so analytics/telemetry doesn't flood.
 const __origFetch = globalThis.fetch.bind(globalThis);
 let __fetchSeq = 0;
-const LLM_HOST_PATTERN = /(generativelanguage|api\.openai|api\.anthropic|api\.groq|api\.deepseek)\./i;
+const LLM_HOST_PATTERN = /(generativelanguage|api\.openai|api\.anthropic|api\.groq|api\.deepseek|openrouter\.ai)\./i;
 const loggedFetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
   const url = typeof input === 'string'
     ? input
@@ -1744,16 +1744,18 @@ async function fetchProviderModelsImpl(provider: LLMProviderId, apiKey: string):
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  // openai / groq / deepseek share the OpenAI-compatible endpoint shape.
+  // openai / groq / deepseek / openrouter share the OpenAI-compatible endpoint shape.
   const baseUrl = OPENAI_COMPAT_BASE_URLS[provider];
   if (!baseUrl) throw new Error(`Unknown provider: ${provider}`);
   const response = await fetch(`${baseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = (await response.json()) as { data?: Array<{ id: string }> };
+  const data = (await response.json()) as { data?: Array<{ id: string; name?: string }> };
+  // OpenRouter returns a human-friendly `name` ("Anthropic: Claude 3.5 Sonnet")
+  // alongside the slug id ("anthropic/claude-3.5-sonnet"). Use it when present.
   return (data.data || [])
-    .map((m) => ({ id: m.id, displayName: m.id }))
+    .map((m) => ({ id: m.id, displayName: m.name || m.id }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -1761,6 +1763,7 @@ const OPENAI_COMPAT_BASE_URLS: Record<Exclude<LLMProviderId, 'google' | 'anthrop
   openai: 'https://api.openai.com/v1',
   groq: 'https://api.groq.com/openai/v1',
   deepseek: 'https://api.deepseek.com/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
 };
 
 // API key: prefer saved settings, fallback to env var
