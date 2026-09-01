@@ -65,21 +65,26 @@ export const BASELINE_WINDOW = 50;
 export const MIN_BASELINE_SAMPLES = 6;
 
 /**
- * Only recordings with at least this much speech join the baseline.
- *
- * Short clips still get scored — damped for their length — but letting them
- * into the baseline would be self-defeating: their tilt is noisy, that noise
- * widens the baseline spread, and a wider spread blunts every later verdict.
- * The baseline should be built from the measurements we trust most.
+ * Only recordings with at least this much speech join the baseline. Kept equal
+ * to MIN_SPEECH_SECONDS below: a recording we would not trust enough to judge
+ * is not one to define "normal" with either.
  */
-export const MIN_SPEECH_FOR_BASELINE = 2.5;
+export const MIN_SPEECH_FOR_BASELINE = 10;
 
 /**
- * Recordings with less speech than this are not judged at all. Kept low
- * because short recordings are now damped rather than refused — see
- * `effectiveSpread` — but a fraction of a second is still nothing to judge.
+ * Recordings with less speech than this are not judged at all.
+ *
+ * Ten seconds is the speaker's own call, and it is the right one: a genuine
+ * outburst is not two seconds long, and a wrong verdict on a throwaway phrase
+ * costs more trust than a missed one gains. The damping in `effectiveSpread`
+ * would have handled shorter clips arithmetically, but arithmetic that nobody
+ * believes is worth nothing.
+ *
+ * This governs the VERDICT only. The live colour on the microphone keeps
+ * updating from the first moments of any recording — it reports what is
+ * happening now, and makes no claim about the recording as a whole.
  */
-export const MIN_SPEECH_SECONDS = 1;
+export const MIN_SPEECH_SECONDS = 10;
 
 /**
  * How much the tilt median wobbles purely from having little speech to average,

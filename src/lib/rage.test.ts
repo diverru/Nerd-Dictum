@@ -100,7 +100,7 @@ describe('buildBaseline', () => {
 
 describe('scoreRecording', () => {
   it('scores a calm recording near zero', () => {
-    const v = scoreRecording({ tiltDbPerKhz: -9.3, speechSeconds: 8, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: -9.3, speechSeconds: 12, history: CALM });
     expect(Math.abs(v.score)).toBeLessThan(1);
     expect(v.hot).toBe(false);
   });
@@ -113,21 +113,20 @@ describe('scoreRecording', () => {
     expect(v.hot).toBe(true);
   });
 
-  it('does not flag the same deviation on a one-second clip', () => {
-    // Same voice, barely any speech: we genuinely know less, so it must not
-    // reach the same verdict.
-    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 1, history: CALM });
+  it('refuses a clip under the ten-second bar outright', () => {
+    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 5, history: CALM });
+    expect(v.reason).toBe('too-short');
     expect(v.hot).toBe(false);
   });
 
   it('treats a softer-than-usual voice as calm, not as a deviation', () => {
-    const v = scoreRecording({ tiltDbPerKhz: -11.5, speechSeconds: 8, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: -11.5, speechSeconds: 12, history: CALM });
     expect(v.score).toBeLessThan(0);
     expect(v.hot).toBe(false);
   });
 
   it('refuses to judge a recording with no tilt measurement', () => {
-    const v = scoreRecording({ tiltDbPerKhz: null, speechSeconds: 8, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: null, speechSeconds: 12, history: CALM });
     expect(v.reason).toBe('no-tilt');
     expect(v.hot).toBe(false);
   });
@@ -145,7 +144,7 @@ describe('scoreRecording', () => {
   it('refuses to judge until the baseline has enough recordings', () => {
     const v = scoreRecording({
       tiltDbPerKhz: -6,
-      speechSeconds: 8,
+      speechSeconds: 12,
       history: CALM.slice(0, MIN_BASELINE_SAMPLES - 1),
     });
     expect(v.reason).toBe('baseline-too-small');
@@ -285,7 +284,7 @@ describe('isBaselineUsable', () => {
 
 describe('qualifiesForBaseline', () => {
   it('accepts an ordinary dictation', () => {
-    expect(qualifiesForBaseline(-9.3, 12)).toBe(true);
+    expect(qualifiesForBaseline(-9.3, 20)).toBe(true);
   });
 
   it('rejects a clip too short to measure reliably', () => {
@@ -293,7 +292,7 @@ describe('qualifiesForBaseline', () => {
   });
 
   it('rejects a recording whose tilt could not be measured', () => {
-    expect(qualifiesForBaseline(null, 12)).toBe(false);
-    expect(qualifiesForBaseline(NaN, 12)).toBe(false);
+    expect(qualifiesForBaseline(null, 20)).toBe(false);
+    expect(qualifiesForBaseline(NaN, 20)).toBe(false);
   });
 });
