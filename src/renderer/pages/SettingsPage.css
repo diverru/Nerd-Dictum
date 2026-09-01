@@ -602,3 +602,31 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+
+/* The two ends of a slider, named so the number above it means something
+   without the reader having to guess which direction is "more". */
+.settings-range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+/* A real action inside a settings field — heavier than a link, lighter than
+   the footer's primary button. */
+.settings-secondary-button {
+  align-self: flex-start;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-secondary-button:hover {
+  background: var(--bg-hover, var(--bg-tertiary));
+}

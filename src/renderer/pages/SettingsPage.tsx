@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import type { AppSettings, HoldToRecordKey, LLMProviderId, ProviderConfig } from '../../shared/types';
+import type { AppSettings, NervousnessSettings, HoldToRecordKey, LLMProviderId, ProviderConfig } from '../../shared/types';
 
 // Hold-to-record key options
 const HOLD_TO_RECORD_KEYS: Array<{ value: HoldToRecordKey; label: string }> = [
@@ -112,12 +112,13 @@ const MAX_CUSTOM_HINT_LENGTH = 500;
 const MAX_CUSTOM_KEYWORDS_LENGTH = 1000;
 
 // Tab definitions
-type SettingsTab = 'general' | 'languages' | 'appearance' | 'advanced';
+type SettingsTab = 'general' | 'languages' | 'appearance' | 'calm' | 'advanced';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'languages', label: 'Languages' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'calm', label: 'Calm' },
   { id: 'advanced', label: 'Advanced' },
 ];
 
@@ -136,6 +137,13 @@ export function SettingsPage() {
   const [customKeywords, setCustomKeywords] = useState('');
   const [microphoneDeviceId, setMicrophoneDeviceId] = useState('');
   const [mediaPauseMode, setMediaPauseMode] = useState<'duck' | 'mute' | 'none'>('duck');
+  const [nervousness, setNervousness] = useState<NervousnessSettings>({
+    enabled: true,
+    threshold: 1.6,
+    streakForBlock: 3,
+    blockSeconds: 30,
+  });
+  const [baselineCount, setBaselineCount] = useState<number | null>(null);
   const [silenceDetectionEnabled, setSilenceDetectionEnabled] = useState(true);
   const [silenceDurationMs, setSilenceDurationMs] = useState(2500);
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
@@ -199,6 +207,7 @@ export function SettingsPage() {
     polishProvider: LLMProviderId;
     providerConfigs: Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>;
     mediaPauseMode: 'duck' | 'mute' | 'none';
+    nervousness: NervousnessSettings;
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -237,7 +246,8 @@ export function SettingsPage() {
       transcriptionMode !== initial.transcriptionMode ||
       polishProvider !== initial.polishProvider ||
       JSON.stringify(providerConfigs) !== JSON.stringify(initial.providerConfigs) ||
-      mediaPauseMode !== initial.mediaPauseMode
+      mediaPauseMode !== initial.mediaPauseMode ||
+      JSON.stringify(nervousness) !== JSON.stringify(initial.nervousness)
     );
   }, [
     apiKey,
@@ -266,6 +276,7 @@ export function SettingsPage() {
     polishProvider,
     providerConfigs,
     mediaPauseMode,
+    nervousness,
   ]);
 
   // Load audio devices
@@ -370,6 +381,14 @@ export function SettingsPage() {
         const loadedPolishProvider = (settings.polishProvider as LLMProviderId) || 'google';
         const loadedProviderConfigs = settings.providerConfigs || {};
         const loadedMediaPauseMode = (settings.mediaPauseMode as 'duck' | 'mute' | 'none') || 'duck';
+        const loadedNervousness: NervousnessSettings = {
+          enabled: settings.nervousness?.enabled ?? true,
+          threshold: settings.nervousness?.threshold ?? 1.6,
+          streakForBlock: settings.nervousness?.streakForBlock ?? 3,
+          blockSeconds: settings.nervousness?.blockSeconds ?? 30,
+        };
+        setNervousness(loadedNervousness);
+        void window.electronAPI.nervousnessBaselineCount?.().then(setBaselineCount);
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -426,6 +445,7 @@ export function SettingsPage() {
           polishProvider: loadedPolishProvider,
           providerConfigs: loadedProviderConfigs,
           mediaPauseMode: loadedMediaPauseMode,
+          nervousness: loadedNervousness,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -525,6 +545,7 @@ export function SettingsPage() {
         polishProvider,
         providerConfigs,
         mediaPauseMode,
+        nervousness,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -555,6 +576,7 @@ export function SettingsPage() {
           polishProvider,
           providerConfigs,
           mediaPauseMode,
+          nervousness,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -1319,6 +1341,118 @@ export function SettingsPage() {
               </div>
               <span className="settings-hint">System follows your OS appearance.</span>
             </div>
+          </>
+        )}
+
+        {/* Calm Tab — voice-tension detection */}
+        {activeTab === 'calm' && (
+          <>
+            <div className="settings-field">
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  checked={nervousness.enabled}
+                  onChange={(e) =>
+                    setNervousness({ ...nervousness, enabled: e.target.checked })
+                  }
+                />
+                <span>Watch my tone of voice</span>
+              </label>
+              <span className="settings-hint">
+                Tints the microphone from green to red while you dictate, based on how
+                harsh your voice sounds compared with your own normal.
+              </span>
+            </div>
+
+            {nervousness.enabled && (
+              <>
+                <div className="settings-field">
+                  <label>Sensitivity: {nervousness.threshold.toFixed(1)}</label>
+                  <input
+                    type="range"
+                    min="0.8"
+                    max="3"
+                    step="0.1"
+                    value={nervousness.threshold}
+                    onChange={(e) =>
+                      setNervousness({ ...nervousness, threshold: parseFloat(e.target.value) })
+                    }
+                    className="settings-range"
+                  />
+                  <div className="settings-range-labels">
+                    <span>Reacts early</span>
+                    <span>Only real anger</span>
+                  </div>
+                  <span className="settings-hint">
+                    How far from your usual voice counts as tense. Lower turns the
+                    microphone red sooner. There is no right value — set it by ear.
+                  </span>
+                </div>
+
+                <div className="settings-field">
+                  <label>Block after {nervousness.streakForBlock} tense recordings in a row</label>
+                  <input
+                    type="range"
+                    min="2"
+                    max="8"
+                    step="1"
+                    value={nervousness.streakForBlock}
+                    onChange={(e) =>
+                      setNervousness({ ...nervousness, streakForBlock: Number(e.target.value) })
+                    }
+                    className="settings-range"
+                  />
+                  <span className="settings-hint">
+                    One sharp recording happens. Several in a row is a pattern. A calm
+                    recording resets the count.
+                  </span>
+                </div>
+
+                <div className="settings-field">
+                  <label>Block for {nervousness.blockSeconds} seconds</label>
+                  <input
+                    type="range"
+                    min="10"
+                    max="180"
+                    step="5"
+                    value={nervousness.blockSeconds}
+                    onChange={(e) =>
+                      setNervousness({ ...nervousness, blockSeconds: Number(e.target.value) })
+                    }
+                    className="settings-range"
+                  />
+                  <span className="settings-hint">
+                    A full-screen pause you cannot skip. Long enough to break the
+                    momentum, short enough not to cost you the thread.
+                  </span>
+                </div>
+
+                <div className="settings-field">
+                  <label>Your voice baseline</label>
+                  <span className="settings-hint">
+                    {baselineCount === null
+                      ? 'Checking…'
+                      : baselineCount === 0
+                        ? 'Not built yet. Dictate a few messages over 10 seconds and it appears on its own.'
+                        : `Built from your last ${baselineCount} recording${baselineCount === 1 ? '' : 's'}. It follows you as you go — nothing to set.`}
+                  </span>
+                  <button
+                    type="button"
+                    className="settings-secondary-button"
+                    onClick={async () => {
+                      await window.electronAPI.resetNervousnessBaseline?.();
+                      setBaselineCount(0);
+                    }}
+                  >
+                    Start the baseline over
+                  </button>
+                  <span className="settings-hint">
+                    Use after switching microphone, or if the colours stop matching how
+                    you actually feel.
+                  </span>
+                </div>
+              </>
+            )}
           </>
         )}
 

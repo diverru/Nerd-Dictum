@@ -31,6 +31,7 @@ const defaultSettings: AppSettings = {
   polishProvider: 'google',
   providerConfigs: {},
   mediaPauseMode: 'duck',
+  nervousness: { enabled: true, threshold: 1.6, streakForBlock: 3, blockSeconds: 30 },
 };
 
 const defaultStats: StatsWithDerived = {

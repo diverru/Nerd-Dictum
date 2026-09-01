@@ -67,6 +67,24 @@ export interface AppSettings {
   // 'mute' — fully mute system output. Lands harder/instant, no fade.
   // 'none' — leave audio alone. The user manages it manually.
   mediaPauseMode: 'duck' | 'mute' | 'none';
+  // Voice-tension detection: colours the microphone while recording and, past
+  // a streak of tense recordings, blocks the screen for a cool-down.
+  nervousness: NervousnessSettings;
+}
+
+export interface NervousnessSettings {
+  /** Off means no colouring, no scoring, no blocking. */
+  enabled: boolean;
+  /**
+   * Baseline spreads at which the microphone reaches full red and a recording
+   * counts as tense. Lower reacts sooner. Tuned by ear against one's own
+   * voice — there is no universally right value.
+   */
+  threshold: number;
+  /** Tense recordings in a row before the screen is blocked. */
+  streakForBlock: number;
+  /** How long the block lasts, in seconds. */
+  blockSeconds: number;
 }
 
 export interface DailyStats {

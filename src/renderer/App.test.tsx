@@ -83,6 +83,7 @@ const defaultSettings = {
   polishProvider: 'google' as const,
   providerConfigs: {},
   mediaPauseMode: 'duck' as const,
+  nervousness: { enabled: true, threshold: 1.6, streakForBlock: 3, blockSeconds: 30 },
 };
 
 /**

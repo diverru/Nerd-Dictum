@@ -18,6 +18,7 @@ import { ParakeetService, type ParakeetStatus } from './parakeet-service';
 import { polishViaProvider, type PolishOptions } from '../lib/polish';
 import type { LLMProviderId } from '../shared/types';
 import type { AppSettings } from '../shared/types';
+import { DEFAULT_THRESHOLD } from '../lib/rage';
 import {
   loadRageBaseline,
   recordAndScore,
@@ -420,6 +421,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   polishProvider: 'google',
   providerConfigs: {},
   mediaPauseMode: 'duck',
+  nervousness: {
+    enabled: true,
+    threshold: DEFAULT_THRESHOLD,
+    streakForBlock: 3,
+    blockSeconds: 30,
+  },
 };
 
 function getSettingsPath(): string {
@@ -432,7 +439,13 @@ function loadSettings(): AppSettings {
     if (fs.existsSync(settingsPath)) {
       const data = fs.readFileSync(settingsPath, 'utf-8');
       const parsed = JSON.parse(data);
-      const settings = { ...DEFAULT_SETTINGS, ...parsed };
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        // The spread above is shallow, so a nested block from an older
+        // settings file would arrive missing any field added since.
+        nervousness: { ...DEFAULT_SETTINGS.nervousness, ...(parsed.nervousness ?? {}) },
+      };
       // Sync launchAtStartup with actual system state
       const { openAtLogin } = app.getLoginItemSettings();
       settings.launchAtStartup = openAtLogin;
@@ -1948,7 +1961,12 @@ ipcMain.handle('save-debug-recording', (_event, wavBase64: string, meta: unknown
 ipcMain.handle(
   'score-nervousness',
   (_event, tiltDbPerKhz: number | null, recordingSeconds: number, speechSeconds: number) => {
-    const verdict = recordAndScore(tiltDbPerKhz, recordingSeconds, speechSeconds);
+    const verdict = recordAndScore(
+      tiltDbPerKhz,
+      recordingSeconds,
+      speechSeconds,
+      appSettings.nervousness?.threshold
+    );
     const tilt = tiltDbPerKhz === null ? 'n/a' : `${tiltDbPerKhz.toFixed(2)}`;
     if (verdict.reason) {
       log(

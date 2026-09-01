@@ -9,7 +9,12 @@ import { InfoButton } from './components/InfoButton';
 import { HideButton } from './components/HideButton';
 import { StatsButton } from './components/StatsButton';
 import { AudioLevelRing } from './components/AudioLevelRing';
-import { liveTension, isBaselineUsable, type RageBaseline } from '../lib/rage';
+import {
+  liveTension,
+  isBaselineUsable,
+  DEFAULT_THRESHOLD,
+  type RageBaseline,
+} from '../lib/rage';
 import type { AppSettings } from './types/electron';
 
 const MESSAGE_TIMEOUT_MS = 2000;
@@ -178,6 +183,13 @@ export function App() {
   // the recording it is still working on, instead of flashing an unrelated
   // orange and green.
   const [lastTint, setLastTint] = useState<string | null>(null);
+  // Read once per recording, so a change in Settings takes effect on the next
+  // one without the widget polling for it.
+  // The threshold lives in a ref because the audio callback reads it; the
+  // on/off switch is state because the render reads it, and a ref would not
+  // repaint the button when the setting arrives.
+  const nervousnessRef = useRef<{ threshold: number }>({ threshold: DEFAULT_THRESHOLD });
+  const [nervousnessEnabled, setNervousnessEnabled] = useState<boolean>(true);
   const [appVersion, setAppVersion] = useState<string>('');
   const [hotkey, setHotkey] = useState<string>('CommandOrControl+Shift+R');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -685,6 +697,10 @@ export function App() {
       rageBaselineRef.current = null;
       setHasRageBaseline(false);
       setLastTint(null);
+      void window.electronAPI.getSettings().then((s) => {
+        nervousnessRef.current = { threshold: s.nervousness?.threshold ?? DEFAULT_THRESHOLD };
+        setNervousnessEnabled(s.nervousness?.enabled ?? true);
+      });
       if (!window.electronAPI.nervousnessBaseline) {
         // Older preload: the tint cannot work and silence would look like a
         // dead feature rather than a stale build.
@@ -705,7 +721,12 @@ export function App() {
       // microphone blink amber — a blinking indicator is one nobody believes.
       let smoothedTension = 0;
       recorderRef.current.setOnVoiceTilt((rollingTilt, windowSeconds) => {
-        const tension = liveTension(rollingTilt, rageBaselineRef.current, windowSeconds);
+        const tension = liveTension(
+          rollingTilt,
+          rageBaselineRef.current,
+          windowSeconds,
+          nervousnessRef.current.threshold
+        );
         smoothedTension += (tension - smoothedTension) * TENSION_SMOOTHING;
         setVoiceTension(smoothedTension);
         setLastTint(tensionRgb(smoothedTension));
@@ -1004,15 +1025,16 @@ export function App() {
   // reporting the same recording rather than switching to a colour of their
   // own. With no baseline there is nothing to report, and grey says that
   // honestly — red would read as "you are shouting".
+  const tintAvailable = hasRageBaseline && nervousnessEnabled;
   const micTintRgb =
     state === 'recording'
-      ? hasRageBaseline
+      ? tintAvailable
         ? tensionRgb(voiceTension)
         : null
       : (state === 'transcribing' || state === 'success')
         ? lastTint
         : null;
-  const micHasNoSignal = state === 'recording' && !hasRageBaseline;
+  const micHasNoSignal = state === 'recording' && !tintAvailable;
   return (
     <div
       ref={widgetRef}
