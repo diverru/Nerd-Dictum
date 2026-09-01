@@ -1866,12 +1866,53 @@ ipcMain.handle('transcribe-local-stt', async (_event, wavBase64: string) => {
 const DEBUG_RECORDINGS_DIR = path.join(os.homedir(), '.nerd-dictum', 'recordings');
 const DEBUG_RECORDINGS_FLAG = path.join(os.homedir(), '.nerd-dictum', 'keep-recordings');
 
+// Captured audio is for debugging, not an archive, so it expires. The marker
+// file doubles as the setting: write a number of hours into it to override,
+// leave it empty for the default. Anything unparseable falls back to the
+// default rather than keeping recordings forever by accident.
+const DEBUG_RECORDINGS_DEFAULT_TTL_HOURS = 1;
+
 function debugRecordingEnabled(): boolean {
   try {
     return fs.existsSync(DEBUG_RECORDINGS_FLAG);
   } catch {
     return false;
   }
+}
+
+function debugRecordingTtlMs(): number {
+  let hours = DEBUG_RECORDINGS_DEFAULT_TTL_HOURS;
+  try {
+    const raw = fs.readFileSync(DEBUG_RECORDINGS_FLAG, 'utf-8').trim();
+    const parsed = Number(raw);
+    if (raw && Number.isFinite(parsed) && parsed > 0) hours = parsed;
+  } catch {
+    // Missing or unreadable marker — the default stands.
+  }
+  return hours * 60 * 60 * 1000;
+}
+
+/** Delete captured recordings past their time to live. Best effort throughout. */
+function pruneDebugRecordings(): void {
+  const cutoff = Date.now() - debugRecordingTtlMs();
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(DEBUG_RECORDINGS_DIR)) {
+      if (!name.endsWith('.wav') && !name.endsWith('.json')) continue;
+      const full = path.join(DEBUG_RECORDINGS_DIR, name);
+      try {
+        if (fs.statSync(full).mtimeMs < cutoff) {
+          fs.unlinkSync(full);
+          removed++;
+        }
+      } catch {
+        // A file that vanished under us needs no deleting.
+      }
+    }
+  } catch {
+    // No directory yet — nothing to prune.
+  }
+  if (removed > 0) log(`[DebugRecording] pruned ${removed} expired file(s)`);
 }
 
 ipcMain.handle('debug-recording-enabled', () => debugRecordingEnabled());
@@ -1885,6 +1926,7 @@ ipcMain.handle('save-debug-recording', (_event, wavBase64: string, meta: unknown
     fs.writeFileSync(`${base}.wav`, Buffer.from(wavBase64, 'base64'));
     fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2), 'utf-8');
     log(`[DebugRecording] saved ${base}.wav`);
+    pruneDebugRecordings();
     return true;
   } catch (error) {
     log('[DebugRecording] save failed:', error);

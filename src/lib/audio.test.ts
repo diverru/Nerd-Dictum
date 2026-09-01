@@ -18,6 +18,7 @@ import {
   computeLoudnessStats,
   summariseLevels,
   windowRms,
+  spectralTilt,
 } from './audio';
 
 // Mock audio data generators
@@ -947,5 +948,69 @@ describe('Loudness measurement', () => {
       expect(stats.frames.count).toBe(200);
       expect(Object.keys(stats.windows)).toHaveLength(0);
     });
+  });
+});
+
+describe('spectralTilt', () => {
+  // 1024-point FFT at 16 kHz: each bin is 15.625 Hz wide.
+  const BIN_HZ = 16000 / 1024;
+  const build = (fn: (hz: number) => number) =>
+    Float32Array.from({ length: 513 }, (_, i) => fn(i * BIN_HZ));
+
+  it('reports zero slope for a flat spectrum', () => {
+    expect(spectralTilt(build(() => -40), BIN_HZ)!).toBeCloseTo(0, 6);
+  });
+
+  it('recovers the slope of a straight line', () => {
+    // -8 dB per kHz, by construction.
+    expect(spectralTilt(build((hz) => -20 - 8 * (hz / 1000)), BIN_HZ)!).toBeCloseTo(-8, 3);
+  });
+
+  it('ignores a constant gain offset — the whole reason tilt is used', () => {
+    const quiet = build((hz) => -60 - 9 * (hz / 1000));
+    const loud = build((hz) => -20 - 9 * (hz / 1000));
+    expect(spectralTilt(quiet, BIN_HZ)!).toBeCloseTo(spectralTilt(loud, BIN_HZ)!, 6);
+  });
+
+  it('reads less negative for a harsher spectrum', () => {
+    const calm = spectralTilt(build((hz) => -20 - 9.3 * (hz / 1000)), BIN_HZ)!;
+    const harsh = spectralTilt(build((hz) => -20 - 7.0 * (hz / 1000)), BIN_HZ)!;
+    expect(harsh).toBeGreaterThan(calm);
+  });
+
+  it('skips silent bins rather than fitting to -Infinity', () => {
+    const withHoles = build((hz) => -20 - 8 * (hz / 1000));
+    withHoles[40] = -Infinity;
+    withHoles[41] = -Infinity;
+    expect(spectralTilt(withHoles, BIN_HZ)!).toBeCloseTo(-8, 2);
+  });
+
+  it('returns null when the band holds too few bins to fit a line', () => {
+    expect(spectralTilt(build(() => -40), BIN_HZ, 200, 210)).toBeNull();
+    expect(spectralTilt([], BIN_HZ)).toBeNull();
+    expect(spectralTilt(build(() => -40), 0)).toBeNull();
+  });
+});
+
+describe('computeLoudnessStats tilt reporting', () => {
+  const frames = (v: number, n: number) => new Array(n).fill(v);
+
+  it('reports the median tilt once there are enough spectra', () => {
+    const tilts = [...new Array(40).fill(-9.3), ...new Array(40).fill(-7.1)];
+    const stats = computeLoudnessStats(frames(0.1, 200), 8, tilts)!;
+    expect(stats.tiltSamples).toBe(80);
+    expect(stats.tiltDbPerKhz!).toBeCloseTo(-8.2, 1);
+  });
+
+  it('reports no tilt when too few spectra were collected', () => {
+    const stats = computeLoudnessStats(frames(0.1, 200), 8, new Array(5).fill(-9))!;
+    expect(stats.tiltDbPerKhz).toBeNull();
+    expect(stats.tiltSamples).toBe(5);
+  });
+
+  it('reports no tilt when the analyser was unavailable', () => {
+    const stats = computeLoudnessStats(frames(0.1, 200), 8)!;
+    expect(stats.tiltDbPerKhz).toBeNull();
+    expect(stats.tiltSamples).toBe(0);
   });
 });

@@ -42,6 +42,28 @@ const MIN_SPEECH_FRAMES_FOR_LOUDNESS = 60;
 const CANDIDATE_WINDOW_MS = [250, 500, 1000, 2000];
 // Fewer windows than this and the percentiles describe nothing.
 const MIN_WINDOWS_FOR_STATS = 4;
+
+// Spectral tilt constants.
+// Tilt is the slope of the log spectrum: how fast energy falls off as
+// frequency rises. A calm voice falls off steeply; a strained one pushes
+// energy upward and the slope flattens. Measured on this speaker, calm sat at
+// -9.3 dB/kHz with a spread of only +-0.33, while deliberately angry
+// recordings landed 1.5 to 2.5 dB/kHz higher — four to seven times the calm
+// spread. That tiny spread is what makes it a better signal than loudness.
+//
+// Crucially it is a SLOPE, so a constant gain offset cancels out: a
+// microphone that flattens level in hardware cannot flatten this.
+const TILT_FFT_SIZE = 1024;
+// 200 Hz skips the fundamental and room rumble; 6 kHz is the top of useful
+// speech energy at a 16 kHz sample rate.
+const TILT_MIN_HZ = 200;
+const TILT_MAX_HZ = 6000;
+// One spectrum per this many worklet frames (~8 ms each), i.e. about 30/s.
+// Sampling every frame buys nothing: neighbouring 8 ms slices of the same
+// vowel have almost the same spectrum.
+const TILT_FRAME_STRIDE = 4;
+// Below this many spectra the median is not worth reporting.
+const MIN_TILT_SAMPLES = 30;
 // Dumps every frame's level into the log. Superseded by saved recordings —
 // the frame series now travels in the JSON sidecar next to the WAV, where it
 // costs nothing and sits beside the audio it describes. Left here as a switch
@@ -135,6 +157,14 @@ export interface LoudnessStats {
    */
   frames: LevelStats;
   /**
+   * Median slope of the log spectrum in dB per kHz, over 200-6000 Hz, across
+   * the recording's speech. Less negative means a harsher, more strained
+   * voice. Null when the recording held too few spectra to bother.
+   */
+  tiltDbPerKhz: number | null;
+  /** How many spectra the tilt median was taken over. */
+  tiltSamples: number;
+  /**
    * The same speech averaged over windows of different lengths, keyed by
    * window duration in milliseconds. Longer windows average syllables away and
    * leave only sustained level — which is what shouting actually is. Which
@@ -175,6 +205,13 @@ export class AudioRecorder {
   private frameDurationMs: number = 0;
   private loudness: LoudnessStats | null = null;
   private deviceLabel: string = '';
+  // Spectral tilt is read off a parallel AnalyserNode rather than computed by
+  // hand: the browser already has an optimised FFT, and a slope needs a real
+  // spectrum, not the 128-sample frames the worklet delivers.
+  private analyserNode: AnalyserNode | null = null;
+  private spectrumDb: Float32Array<ArrayBuffer> | null = null;
+  private tiltSamples: number[] = [];
+  private speechFrameCounter: number = 0;
 
   constructor(deps: AudioRecorderDeps = defaultDeps, options: AudioRecorderOptions = {}) {
     this.deps = deps;
@@ -297,6 +334,8 @@ export class AudioRecorder {
       this.pcmChunks = [];
       this.wavBase64 = null;
       this.speechFrameRms = [];
+      this.tiltSamples = [];
+      this.speechFrameCounter = 0;
       this.frameDurationMs = 0;
       this.loudness = null;
       this.mediaRecorder = new MediaRecorder(this.mediaStream, {
@@ -344,6 +383,16 @@ export class AudioRecorder {
         }
         if (rms >= SILENCE_THRESHOLD) {
           this.speechFrameRms.push(rms);
+          this.speechFrameCounter++;
+          if (
+            this.analyserNode &&
+            this.spectrumDb &&
+            this.speechFrameCounter % TILT_FRAME_STRIDE === 0
+          ) {
+            this.analyserNode.getFloatFrequencyData(this.spectrumDb);
+            const tilt = spectralTilt(this.spectrumDb, this.originalSampleRate / TILT_FFT_SIZE);
+            if (tilt !== null) this.tiltSamples.push(tilt);
+          }
         }
 
         // Call audio level callback (normalized RMS, clamped to 0-1)
@@ -397,6 +446,18 @@ export class AudioRecorder {
         }
       };
 
+      // Parallel analyser for spectral tilt. Guarded because the injected test
+      // AudioContext is a stub without the Web Audio analyser.
+      if (typeof this.audioContext.createAnalyser === 'function') {
+        this.analyserNode = this.audioContext.createAnalyser();
+        this.analyserNode.fftSize = TILT_FFT_SIZE;
+        // No smoothing: we take our own median over the recording, and the
+        // node's default 0.8 would blur transitions into each other first.
+        this.analyserNode.smoothingTimeConstant = 0;
+        this.spectrumDb = new Float32Array(new ArrayBuffer(this.analyserNode.frequencyBinCount * 4));
+        this.sourceNode.connect(this.analyserNode);
+      }
+
       // Connect nodes: source -> worklet -> destination
       this.sourceNode.connect(this.workletNode);
       this.workletNode.connect(this.audioContext.destination);
@@ -437,13 +498,22 @@ export class AudioRecorder {
 
     // Measure loudness before any early return below, so a rejected recording
     // still leaves numbers behind to look at.
-    this.loudness = computeLoudnessStats(this.speechFrameRms, this.frameDurationMs);
+    this.loudness = computeLoudnessStats(
+      this.speechFrameRms,
+      this.frameDurationMs,
+      this.tiltSamples
+    );
     if (this.loudness) {
       const f = this.loudness.frames;
       mainLog(
         `[Loudness] frame(${this.frameDurationMs.toFixed(1)}ms) median=${f.medianDb.toFixed(1)}dB ` +
           `peak=${f.peakDb.toFixed(1)}dB quiet=${f.quietDb.toFixed(1)}dB ` +
           `spread=${f.spreadDb.toFixed(1)}dB n=${f.count} duration=${recordingDuration}ms`
+      );
+      const tilt = this.loudness.tiltDbPerKhz;
+      mainLog(
+        `[Tilt] ${tilt === null ? 'n/a' : `${tilt.toFixed(2)}dB/kHz`} ` +
+          `from ${this.loudness.tiltSamples} spectra`
       );
       for (const windowMs of CANDIDATE_WINDOW_MS) {
         const w = this.loudness.windows[windowMs];
@@ -617,6 +687,12 @@ export class AudioRecorder {
       this.workletNode = null;
     }
 
+    if (this.analyserNode) {
+      this.analyserNode.disconnect();
+      this.analyserNode = null;
+    }
+    this.spectrumDb = null;
+
     if (this.sourceNode) {
       this.sourceNode.disconnect();
       this.sourceNode = null;
@@ -636,6 +712,8 @@ export class AudioRecorder {
     this.pcmChunks = [];
     // `loudness` deliberately survives cleanup — callers read it after stop().
     this.speechFrameRms = [];
+    this.tiltSamples = [];
+    this.speechFrameCounter = 0;
     this.silenceStartTime = null;
     this.silenceStopFired = false;
   }
@@ -674,6 +752,56 @@ export function quantile(values: number[], fraction: number): number {
   const upper = Math.ceil(position);
   if (lower === upper) return sorted[lower];
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+/**
+ * Slope of a log-magnitude spectrum against frequency, in dB per kHz, fitted
+ * by least squares over [minHz, maxHz].
+ *
+ * Because it is a slope, any constant gain applied to the whole spectrum
+ * cancels out — which is the entire point: a microphone that levels loudness
+ * in hardware still cannot hide a change in the shape of the spectrum.
+ *
+ * `spectrumDb[i]` is the level of the bin centred on `i * binHz`. Bins at
+ * digital silence carry no information and are skipped; with fewer than three
+ * usable bins there is no line to fit and the result is null.
+ */
+export function spectralTilt(
+  spectrumDb: Float32Array | number[],
+  binHz: number,
+  minHz: number = TILT_MIN_HZ,
+  maxHz: number = TILT_MAX_HZ
+): number | null {
+  if (binHz <= 0) return null;
+  const first = Math.max(1, Math.ceil(minHz / binHz));
+  const last = Math.min(spectrumDb.length - 1, Math.floor(maxHz / binHz));
+  if (last - first < 2) return null;
+
+  let n = 0;
+  let sumF = 0;
+  let sumD = 0;
+  for (let i = first; i <= last; i++) {
+    const d = spectrumDb[i];
+    if (!Number.isFinite(d)) continue;
+    n++;
+    sumF += (i * binHz) / 1000;
+    sumD += d;
+  }
+  if (n < 3) return null;
+
+  const meanF = sumF / n;
+  const meanD = sumD / n;
+  let num = 0;
+  let den = 0;
+  for (let i = first; i <= last; i++) {
+    const d = spectrumDb[i];
+    if (!Number.isFinite(d)) continue;
+    const fc = (i * binHz) / 1000 - meanF;
+    num += fc * (d - meanD);
+    den += fc * fc;
+  }
+  if (den === 0) return null;
+  return num / den;
 }
 
 /** Percentile summary of a list of amplitudes. */
@@ -715,7 +843,8 @@ export function windowRms(frameRms: number[], framesPerWindow: number): number[]
  */
 export function computeLoudnessStats(
   speechFrameRms: number[],
-  frameDurationMs: number
+  frameDurationMs: number,
+  tiltSamples: number[] = []
 ): LoudnessStats | null {
   if (speechFrameRms.length < MIN_SPEECH_FRAMES_FOR_LOUDNESS) return null;
 
@@ -731,7 +860,13 @@ export function computeLoudnessStats(
     }
   }
 
-  return { frames: summariseLevels(speechFrameRms), windows };
+  return {
+    frames: summariseLevels(speechFrameRms),
+    tiltDbPerKhz:
+      tiltSamples.length >= MIN_TILT_SAMPLES ? quantile(tiltSamples, 0.5) : null,
+    tiltSamples: tiltSamples.length,
+    windows,
+  };
 }
 
 function buildWavBase64FromPcm(
