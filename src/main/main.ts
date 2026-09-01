@@ -18,6 +18,12 @@ import { ParakeetService, type ParakeetStatus } from './parakeet-service';
 import { polishViaProvider, type PolishOptions } from '../lib/polish';
 import type { LLMProviderId } from '../shared/types';
 import type { AppSettings } from '../shared/types';
+import {
+  loadRageBaseline,
+  recordAndScore,
+  resetRageBaseline,
+  getRageHistoryCount,
+} from './rage-baseline';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1581,6 +1587,7 @@ app.whenReady().then(() => {
 
   // Load transcript history for context feature
   loadTranscriptHistory();
+  loadRageBaseline();
 
   // Load usage statistics
   loadStats();
@@ -1933,6 +1940,37 @@ ipcMain.handle('save-debug-recording', (_event, wavBase64: string, meta: unknown
     return false;
   }
 });
+
+// --- Nervousness scoring -----------------------------------------------------
+// Measures only. Nothing warns, nothing blocks: the score is logged so it can
+// be watched against real dictation before it is allowed to act.
+ipcMain.handle(
+  'score-nervousness',
+  (_event, tiltDbPerKhz: number | null, speechSeconds: number) => {
+    const verdict = recordAndScore(tiltDbPerKhz, speechSeconds);
+    const tilt = tiltDbPerKhz === null ? 'n/a' : `${tiltDbPerKhz.toFixed(2)}`;
+    if (verdict.reason) {
+      log(
+        `[Rage] no verdict (${verdict.reason}) tilt=${tilt} speech=${speechSeconds.toFixed(1)}s ` +
+          `baseline=${verdict.baseline?.count ?? 0}`
+      );
+    } else {
+      const b = verdict.baseline!;
+      log(
+        `[Rage] score=${verdict.score.toFixed(2)} ${verdict.hot ? 'HOT' : 'calm'} ` +
+          `tilt=${tilt} baseline=${b.centre.toFixed(2)}+-${b.spread.toFixed(2)} n=${b.count}`
+      );
+    }
+    return verdict;
+  }
+);
+
+ipcMain.handle('reset-nervousness-baseline', () => {
+  resetRageBaseline();
+  return true;
+});
+
+ipcMain.handle('nervousness-baseline-count', () => getRageHistoryCount());
 
 ipcMain.handle('open-wake-word-folder', () => {
   const dir = wakeWordCustomDir();

@@ -150,6 +150,13 @@ export function App() {
     wavBase64: string;
     meta: Record<string, unknown>;
   } | null>(null);
+  // Voice measurements of the recording just finished. Kept separately from
+  // the debug sample above, which only exists when capture is on and the mode
+  // produced a WAV — scoring must work regardless of both.
+  const pendingVoiceRef = useRef<{
+    tiltDbPerKhz: number | null;
+    speechSeconds: number;
+  } | null>(null);
   const lastAudioRef = useRef<string | null>(null);
   // Held alongside lastAudioRef so the retry path declares the recorder's
   // real MIME (opus) instead of falling back to audio/wav.
@@ -396,6 +403,14 @@ export function App() {
       void window.electronAPI.trackEvent('transcription_success', { transcript_length: transcript.length });
       void window.electronAPI.recordTranscriptionStats(transcript, lastRecordingDurationRef.current);
 
+      // Nervousness scoring. Measures only for now — main logs the verdict and
+      // nothing acts on it. Fire-and-forget like the rest of this block.
+      const voice = pendingVoiceRef.current;
+      pendingVoiceRef.current = null;
+      if (voice && window.electronAPI.scoreNervousness) {
+        void window.electronAPI.scoreNervousness(voice.tiltDbPerKhz, voice.speechSeconds);
+      }
+
       // Debug capture. Fire-and-forget and last in the side-effect block: it
       // must never delay the OK indicator, and main drops it outright unless
       // the capture marker file is there.
@@ -498,6 +513,12 @@ export function App() {
 
       // For local STT modes the recorder retained PCM — pull a 16 kHz WAV
       // out alongside the opus blob so the local pipeline has what it wants.
+      const loudness = recorderRef.current?.getLoudnessStats() ?? null;
+      pendingVoiceRef.current = {
+        tiltDbPerKhz: loudness?.tiltDbPerKhz ?? null,
+        speechSeconds: recorderRef.current?.getSpeechSeconds() ?? 0,
+      };
+
       const wavBase64 = recorderRef.current?.getWavBase64() ?? undefined;
       pendingDebugSampleRef.current = wavBase64
         ? {
@@ -506,7 +527,7 @@ export function App() {
               recordedAt: new Date().toISOString(),
               durationMs: recordingDuration,
               device: recorderRef.current?.getDeviceLabel() ?? '',
-              loudness: recorderRef.current?.getLoudnessStats() ?? null,
+              loudness,
               frameSeriesDb: recorderRef.current?.getFrameSeriesDb() ?? [],
             },
           }

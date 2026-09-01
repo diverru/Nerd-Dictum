@@ -623,6 +623,14 @@ export class AudioRecorder {
     return this.deviceLabel;
   }
 
+  /**
+   * How many seconds of the last recording were actually speech — pauses
+   * between sentences excluded. Zero before the first frame arrives.
+   */
+  getSpeechSeconds(): number {
+    return (this.speechFrameRms.length * this.frameDurationMs) / 1000;
+  }
+
   /** Raw per-frame levels in dBFS of the last recording. Kept for offline analysis. */
   getFrameSeriesDb(): number[] {
     return this.speechFrameRms.map(rmsToDb);

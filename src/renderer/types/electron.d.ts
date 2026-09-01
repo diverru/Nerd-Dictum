@@ -41,6 +41,19 @@ export interface ElectronAPI {
     | { ok: true; text: string; elapsedMs: number }
     | { ok: false; error: string }
   >;
+  /** Scores one recording against the speaker's own baseline, then folds it in. */
+  scoreNervousness?: (
+    tiltDbPerKhz: number | null,
+    speechSeconds: number
+  ) => Promise<{
+    score: number;
+    hot: boolean;
+    reason?: 'no-tilt' | 'too-short' | 'baseline-too-small';
+    baseline: { centre: number; spread: number; count: number } | null;
+  }>;
+  /** Forgets the baseline — for a new microphone, or one gone wrong. */
+  resetNervousnessBaseline?: () => Promise<boolean>;
+  nervousnessBaselineCount?: () => Promise<number>;
   /** True when the marker file ~/.nerd-dictum/keep-recordings exists. */
   debugRecordingEnabled?: () => Promise<boolean>;
   /** Writes the WAV plus a JSON sidecar to ~/.nerd-dictum/recordings. No-op when capture is off. */
