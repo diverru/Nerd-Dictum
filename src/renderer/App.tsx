@@ -173,6 +173,11 @@ export function App() {
   // repaint it either.
   const rageBaselineRef = useRef<RageBaseline | null>(null);
   const [hasRageBaseline, setHasRageBaseline] = useState<boolean>(false);
+  // The colour the microphone ended the recording on. Carried through
+  // transcribing and success so the widget keeps saying the same thing about
+  // the recording it is still working on, instead of flashing an unrelated
+  // orange and green.
+  const [lastTint, setLastTint] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>('');
   const [hotkey, setHotkey] = useState<string>('CommandOrControl+Shift+R');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -679,6 +684,7 @@ export function App() {
       // baseline just means the microphone keeps its usual colour.
       rageBaselineRef.current = null;
       setHasRageBaseline(false);
+      setLastTint(null);
       if (!window.electronAPI.nervousnessBaseline) {
         // Older preload: the tint cannot work and silence would look like a
         // dead feature rather than a stale build.
@@ -702,6 +708,7 @@ export function App() {
         const tension = liveTension(rollingTilt, rageBaselineRef.current, windowSeconds);
         smoothedTension += (tension - smoothedTension) * TENSION_SMOOTHING;
         setVoiceTension(smoothedTension);
+        setLastTint(tensionRgb(smoothedTension));
         // First emission and then sparsely: enough to prove the path is live
         // without a line per frame.
         tiltEmissions++;
@@ -992,6 +999,20 @@ export function App() {
     };
   }, []);
 
+  // While recording the microphone carries the live reading; afterwards it
+  // holds whatever the recording ended on, so the spinner and the tick keep
+  // reporting the same recording rather than switching to a colour of their
+  // own. With no baseline there is nothing to report, and grey says that
+  // honestly — red would read as "you are shouting".
+  const micTintRgb =
+    state === 'recording'
+      ? hasRageBaseline
+        ? tensionRgb(voiceTension)
+        : null
+      : (state === 'transcribing' || state === 'success')
+        ? lastTint
+        : null;
+  const micHasNoSignal = state === 'recording' && !hasRageBaseline;
   return (
     <div
       ref={widgetRef}
@@ -1013,15 +1034,11 @@ export function App() {
       <div className="mic-button-container">
         {state === 'recording' && <AudioLevelRing level={audioLevel} />}
         <button
-          className={`mic-button ${state}`}
-          style={
-            state === 'recording' && hasRageBaseline
-              ? ({
-                  background: `rgb(${tensionRgb(voiceTension)})`,
-                  '--mic-glow-rgb': tensionRgb(voiceTension),
-                } as CSSProperties)
-              : undefined
-          }
+          className={`mic-button ${state}${micHasNoSignal ? ' no-signal' : ''}`}
+          style={micTintRgb ? ({
+            background: `rgb(${micTintRgb})`,
+            '--mic-glow-rgb': micTintRgb,
+          } as CSSProperties) : undefined}
           onClick={handleToggleRecording}
           aria-label={
             state === 'idle' || state === 'success'

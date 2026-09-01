@@ -144,6 +144,16 @@
   animation: pulse 1.5s ease-in-out infinite;
 }
 
+/* Recording, but the voice baseline is not built yet, so there is nothing to
+   report about the tone. Grey says that; red would read as "you are shouting"
+   before anything has been measured. The pulse and the level ring still show
+   that recording is live. */
+.mic-button.recording.no-signal {
+  background: var(--color-mic-idle, #3a3a3a);
+  color: var(--text-primary, #e0e0e0);
+  --mic-glow-rgb: 120, 120, 120;
+}
+
 .mic-button.transcribing {
   background: #ff9800;
   color: #1a1a1a;

@@ -133,11 +133,16 @@ export function effectiveSpread(baselineSpread: number, speechSeconds: number): 
 }
 
 /**
- * Default threshold, in baseline spreads. On the labelled set every calm
- * recording stayed under +1.2 and every angry one cleared +2.7, so 2 sits in
- * the empty gap between them rather than on top of either group.
+ * Default threshold, in baseline spreads — the point the colour reaches full
+ * red and a recording counts as hot.
+ *
+ * The labelled set put calm under +1.2 and angry over +2.7, which argued for
+ * 2. Watching it live against a voice that knows what it was doing argues
+ * lower: red arrived only well past the point the speaker already felt
+ * aggressive. Their judgement beats the labelled set here, because the
+ * labelled set was acted and this is not.
  */
-export const DEFAULT_THRESHOLD = 2;
+export const DEFAULT_THRESHOLD = 1.6;
 
 /**
  * A spread can collapse to zero — identical values, or a baseline of two.
