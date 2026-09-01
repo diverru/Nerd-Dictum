@@ -16,6 +16,7 @@ import electronLog from 'electron-log';
 import {
   appendSample,
   buildBaseline,
+  qualifiesForBaseline,
   scoreRecording,
   type RageBaseline,
   type RageSample,
@@ -80,14 +81,11 @@ export function recordAndScore(
 
   const verdict = scoreRecording({ tiltDbPerKhz, speechSeconds, history, threshold });
 
-  // Only recordings we would have judged get remembered. A two-word clip has
-  // an unstable tilt, and letting it into the baseline would widen the spread
-  // and blunt every later verdict.
-  if (!verdict.reason || verdict.reason === 'baseline-too-small') {
-    if (tiltDbPerKhz !== null && Number.isFinite(tiltDbPerKhz)) {
-      history = appendSample(history, { tiltDbPerKhz, at: Date.now() });
-      save();
-    }
+  // Short clips are scored but not remembered: their tilt is noisy, and that
+  // noise would widen the baseline spread and blunt every later verdict.
+  if (qualifiesForBaseline(tiltDbPerKhz, speechSeconds)) {
+    history = appendSample(history, { tiltDbPerKhz: tiltDbPerKhz as number, at: Date.now() });
+    save();
   }
 
   return verdict;

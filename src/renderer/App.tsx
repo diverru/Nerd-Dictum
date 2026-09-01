@@ -672,8 +672,8 @@ export function App() {
         rageBaselineRef.current = baseline ?? null;
         setHasRageBaseline(isBaselineUsable(baseline ?? null));
       });
-      recorderRef.current.setOnVoiceTilt((rollingTilt) => {
-        setVoiceTension(liveTension(rollingTilt, rageBaselineRef.current));
+      recorderRef.current.setOnVoiceTilt((rollingTilt, windowSeconds) => {
+        setVoiceTension(liveTension(rollingTilt, rageBaselineRef.current, windowSeconds));
       });
       recorderRef.current.setOnAudioLevel((level) => {
         const current = audioLevelRef.current;

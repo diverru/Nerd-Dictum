@@ -58,18 +58,56 @@ export interface RageVerdict {
 export const BASELINE_WINDOW = 50;
 
 /**
- * Below this the baseline is guesswork and no verdict is given. Ten ordinary
- * recordings is a few minutes of normal work, so this costs the speaker
- * nothing but a short warm-up after a reset.
+ * Below this the baseline is guesswork and no verdict is given. A handful of
+ * ordinary dictations, so this costs the speaker nothing but a short warm-up
+ * after a reset.
  */
-export const MIN_BASELINE_SAMPLES = 10;
+export const MIN_BASELINE_SAMPLES = 6;
 
 /**
- * Recordings with less speech than this are not judged. Short clips give the
- * median too few spectra to be stable, and a wrong verdict on a two-word
- * throwaway is worse than no verdict.
+ * Only recordings with at least this much speech join the baseline.
+ *
+ * Short clips still get scored — damped for their length — but letting them
+ * into the baseline would be self-defeating: their tilt is noisy, that noise
+ * widens the baseline spread, and a wider spread blunts every later verdict.
+ * The baseline should be built from the measurements we trust most.
  */
-export const MIN_SPEECH_SECONDS = 1.5;
+export const MIN_SPEECH_FOR_BASELINE = 2.5;
+
+/**
+ * Recordings with less speech than this are not judged at all. Kept low
+ * because short recordings are now damped rather than refused — see
+ * `effectiveSpread` — but a fraction of a second is still nothing to judge.
+ */
+export const MIN_SPEECH_SECONDS = 1;
+
+/**
+ * How much the tilt median wobbles purely from having little speech to average,
+ * in dB/kHz for one second, falling off as 1/sqrt(seconds).
+ *
+ * Measured on the labelled set by cutting recordings into slices and watching
+ * the medians scatter: 1.58 dB/kHz at one second, 1.10 at two, 0.72 at four.
+ *
+ * This number matters more than it looks. The calm baseline varies by only
+ * ±0.33 dB/kHz BETWEEN recordings of about ten seconds each. Score a
+ * one-second clip against that spread and pure noise reads as four spreads of
+ * rage — the detector would fire on almost every short recording.
+ */
+export const TILT_SLICE_NOISE_K = 1.5;
+
+/**
+ * The spread a recording of this length should actually be judged against:
+ * the speaker's baseline variation and the measurement noise of this
+ * particular length, added as independent sources.
+ *
+ * The effect is that a short recording has to deviate much further before it
+ * counts, which is exactly right — with little speech we genuinely know less.
+ */
+export function effectiveSpread(baselineSpread: number, speechSeconds: number): number {
+  if (!(speechSeconds > 0)) return Infinity;
+  const noise = TILT_SLICE_NOISE_K / Math.sqrt(speechSeconds);
+  return Math.sqrt(baselineSpread * baselineSpread + noise * noise);
+}
 
 /**
  * Default threshold, in baseline spreads. On the labelled set every calm
@@ -152,7 +190,8 @@ export function scoreRecording(input: ScoreInput): RageVerdict {
     return { score: 0, hot: false, reason: 'baseline-too-small', baseline };
   }
 
-  const score = (tiltDbPerKhz - baseline.centre) / baseline.spread;
+  const score =
+    (tiltDbPerKhz - baseline.centre) / effectiveSpread(baseline.spread, speechSeconds);
   return { score, hot: score >= threshold, baseline };
 }
 
@@ -193,10 +232,27 @@ export function isBaselineUsable(baseline: RageBaseline | null): boolean {
 export function liveTension(
   rollingTiltDbPerKhz: number,
   baseline: RageBaseline | null,
+  windowSeconds: number,
   threshold: number = DEFAULT_THRESHOLD
 ): number {
   if (!isBaselineUsable(baseline)) return 0;
   if (!Number.isFinite(rollingTiltDbPerKhz)) return 0;
-  const score = (rollingTiltDbPerKhz - baseline!.centre) / baseline!.spread;
+  // Damped by the length of the rolling window, so the colour starts cautious
+  // on the first half-second and sharpens as more speech accumulates.
+  const score =
+    (rollingTiltDbPerKhz - baseline!.centre) /
+    effectiveSpread(baseline!.spread, windowSeconds);
   return tensionFraction(score, threshold);
+}
+
+/** True when this recording is solid enough to become part of the baseline. */
+export function qualifiesForBaseline(
+  tiltDbPerKhz: number | null,
+  speechSeconds: number
+): boolean {
+  return (
+    tiltDbPerKhz !== null &&
+    Number.isFinite(tiltDbPerKhz) &&
+    speechSeconds >= MIN_SPEECH_FOR_BASELINE
+  );
 }

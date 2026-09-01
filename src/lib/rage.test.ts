@@ -13,6 +13,10 @@ import {
   tensionFraction,
   liveTension,
   isBaselineUsable,
+  effectiveSpread,
+  qualifiesForBaseline,
+  MIN_SPEECH_FOR_BASELINE,
+  TILT_SLICE_NOISE_K,
   buildBaseline as build,
   type RageSample,
 } from './rage';
@@ -102,10 +106,18 @@ describe('scoreRecording', () => {
   });
 
   it('flags a harsher voice as hot', () => {
-    // Angry recordings on the labelled set sat 1.5-2.5 dB/kHz above calm.
-    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 8, history: CALM });
+    // Angry recordings on the labelled set sat 1.5-2.5 dB/kHz above calm,
+    // over roughly ten seconds of speech each.
+    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 10, history: CALM });
     expect(v.score).toBeGreaterThan(DEFAULT_THRESHOLD);
     expect(v.hot).toBe(true);
+  });
+
+  it('does not flag the same deviation on a one-second clip', () => {
+    // Same voice, barely any speech: we genuinely know less, so it must not
+    // reach the same verdict.
+    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 1, history: CALM });
+    expect(v.hot).toBe(false);
   });
 
   it('treats a softer-than-usual voice as calm, not as a deviation', () => {
@@ -142,7 +154,7 @@ describe('scoreRecording', () => {
   });
 
   it('honours a custom threshold', () => {
-    const input = { tiltDbPerKhz: -8.7, speechSeconds: 8, history: CALM };
+    const input = { tiltDbPerKhz: -8.7, speechSeconds: 10, history: CALM };
     expect(scoreRecording({ ...input, threshold: 10 }).hot).toBe(false);
     expect(scoreRecording({ ...input, threshold: 0.5 }).hot).toBe(true);
   });
@@ -152,10 +164,10 @@ describe('scoreRecording', () => {
     // moves every tilt by a constant. Scores must not care.
     const shift = -1.21;
     const shifted = CALM.map((s) => ({ ...s, tiltDbPerKhz: s.tiltDbPerKhz + shift }));
-    const here = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 8, history: CALM });
+    const here = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 10, history: CALM });
     const there = scoreRecording({
       tiltDbPerKhz: -7.2 + shift,
-      speechSeconds: 8,
+      speechSeconds: 10,
       history: shifted,
     });
     expect(there.score).toBeCloseTo(here.score, 6);
@@ -204,24 +216,55 @@ describe('tensionFraction', () => {
   });
 });
 
+describe('effectiveSpread', () => {
+  it('falls towards the baseline spread as speech accumulates', () => {
+    const s1 = effectiveSpread(0.33, 1);
+    const s4 = effectiveSpread(0.33, 4);
+    const s600 = effectiveSpread(0.33, 600);
+    expect(s1).toBeGreaterThan(s4);
+    expect(s4).toBeGreaterThan(s600);
+    // With enough speech the measurement noise all but vanishes and only the
+    // speaker's own variation is left.
+    expect(s600).toBeCloseTo(0.33, 1);
+  });
+
+  it('is dominated by measurement noise on a one-second clip', () => {
+    // The whole reason this exists: judged against the raw baseline spread,
+    // a one-second clip would score four "spreads" of rage from noise alone.
+    expect(effectiveSpread(0.33, 1)).toBeGreaterThan(TILT_SLICE_NOISE_K * 0.9);
+  });
+
+  it('never flags a recording with no speech at all', () => {
+    expect(effectiveSpread(0.33, 0)).toBe(Infinity);
+    expect(effectiveSpread(0.33, -1)).toBe(Infinity);
+  });
+});
+
 describe('liveTension', () => {
   const baseline = build(CALM);
+  const LONG = 30;
 
   it('reads zero for a voice at the usual tilt', () => {
-    expect(liveTension(baseline.centre, baseline)).toBe(0);
+    expect(liveTension(baseline.centre, baseline, LONG)).toBe(0);
   });
 
   it('rises as the voice gets harsher', () => {
-    const mild = liveTension(baseline.centre + baseline.spread, baseline);
-    const harsh = liveTension(baseline.centre + baseline.spread * 2, baseline);
+    const mild = liveTension(baseline.centre + 0.25, baseline, LONG);
+    const harsh = liveTension(baseline.centre + 3, baseline, LONG);
     expect(mild).toBeGreaterThan(0);
     expect(harsh).toBeGreaterThan(mild);
     expect(harsh).toBe(1);
   });
 
+  it('is more cautious on a short window than a long one', () => {
+    const early = liveTension(baseline.centre + 1.5, baseline, 0.4);
+    const settled = liveTension(baseline.centre + 1.5, baseline, 8);
+    expect(early).toBeLessThan(settled);
+  });
+
   it('reports zero rather than guessing when there is no baseline', () => {
-    expect(liveTension(-6, null)).toBe(0);
-    expect(liveTension(-6, build(CALM.slice(0, 3)))).toBe(0);
+    expect(liveTension(-6, null, LONG)).toBe(0);
+    expect(liveTension(-6, build(CALM.slice(0, 3)), LONG)).toBe(0);
   });
 });
 
@@ -237,5 +280,20 @@ describe('isBaselineUsable', () => {
   it('accepts one at the minimum and above', () => {
     expect(isBaselineUsable(build(CALM.slice(0, MIN_BASELINE_SAMPLES)))).toBe(true);
     expect(isBaselineUsable(build(CALM))).toBe(true);
+  });
+});
+
+describe('qualifiesForBaseline', () => {
+  it('accepts an ordinary dictation', () => {
+    expect(qualifiesForBaseline(-9.3, 12)).toBe(true);
+  });
+
+  it('rejects a clip too short to measure reliably', () => {
+    expect(qualifiesForBaseline(-9.3, MIN_SPEECH_FOR_BASELINE - 0.1)).toBe(false);
+  });
+
+  it('rejects a recording whose tilt could not be measured', () => {
+    expect(qualifiesForBaseline(null, 12)).toBe(false);
+    expect(qualifiesForBaseline(NaN, 12)).toBe(false);
   });
 });

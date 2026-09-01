@@ -62,13 +62,20 @@ const TILT_MAX_HZ = 6000;
 // Sampling every frame buys nothing: neighbouring 8 ms slices of the same
 // vowel have almost the same spectrum.
 const TILT_FRAME_STRIDE = 4;
-// Below this many spectra the median is not worth reporting.
-const MIN_TILT_SAMPLES = 30;
+// Below this many spectra the median is not worth reporting. Roughly half a
+// second of speech; shorter than that the median is noise. Above it the
+// scoring damps short recordings itself rather than refusing them.
+const MIN_TILT_SAMPLES = 15;
 // Rolling window for the live indicator, in spectra. At ~30 a second this is
 // roughly two seconds of speech: long enough that one hard consonant cannot
 // swing the colour, short enough that the speaker sees themselves getting
 // louder while it is happening rather than afterwards.
-const LIVE_TILT_WINDOW = 60;
+const LIVE_TILT_WINDOW = 90;
+// Start showing a colour once this many spectra exist, roughly a third of a
+// second of speech, rather than waiting for a full window. The reading is
+// damped for its own length (see liveTension), so an early one is cautious
+// instead of wrong.
+const LIVE_TILT_MIN_SAMPLES = 12;
 // Emit at most this often, in spectra, so the indicator updates ~10 times a
 // second instead of re-rendering on every measurement.
 const LIVE_TILT_EMIT_EVERY = 3;
@@ -121,7 +128,10 @@ const defaultDeps: AudioRecorderDeps = {
 export type SilenceStopCallback = () => void;
 export type AudioLevelCallback = (rms: number) => void;
 /** Rolling median spectral tilt during recording, in dB per kHz. */
-export type VoiceTiltCallback = (rollingTiltDbPerKhz: number) => void;
+export type VoiceTiltCallback = (
+  rollingTiltDbPerKhz: number,
+  windowSeconds: number
+) => void;
 
 export interface AudioRecorderOptions {
   deviceId?: string;
@@ -215,6 +225,9 @@ export class AudioRecorder {
   // always the rate we get.
   private frameDurationMs: number = 0;
   private loudness: LoudnessStats | null = null;
+  // Snapshotted at stop(), because cleanup() empties speechFrameRms in the
+  // same call and callers read this afterwards.
+  private speechSeconds: number = 0;
   private deviceLabel: string = '';
   // Spectral tilt is read off a parallel AnalyserNode rather than computed by
   // hand: the browser already has an optimised FFT, and a slope needs a real
@@ -358,6 +371,7 @@ export class AudioRecorder {
       this.tiltSamples = [];
       this.speechFrameCounter = 0;
       this.frameDurationMs = 0;
+      this.speechSeconds = 0;
       this.loudness = null;
       this.mediaRecorder = new MediaRecorder(this.mediaStream, {
         mimeType: this.recordedMimeType,
@@ -522,6 +536,7 @@ export class AudioRecorder {
 
     // Measure loudness before any early return below, so a rejected recording
     // still leaves numbers behind to look at.
+    this.speechSeconds = (this.speechFrameRms.length * this.frameDurationMs) / 1000;
     this.loudness = computeLoudnessStats(
       this.speechFrameRms,
       this.frameDurationMs,
@@ -653,10 +668,12 @@ export class AudioRecorder {
    */
   private emitLiveTilt(): void {
     if (!this.onVoiceTilt) return;
-    if (this.tiltSamples.length < LIVE_TILT_WINDOW) return;
+    if (this.tiltSamples.length < LIVE_TILT_MIN_SAMPLES) return;
     if (this.tiltSamples.length % LIVE_TILT_EMIT_EVERY !== 0) return;
     const window = this.tiltSamples.slice(-LIVE_TILT_WINDOW);
-    this.onVoiceTilt(quantile(window, 0.5));
+    // Each spectrum covers TILT_FRAME_STRIDE worklet frames of speech.
+    const windowSeconds = (window.length * TILT_FRAME_STRIDE * this.frameDurationMs) / 1000;
+    this.onVoiceTilt(quantile(window, 0.5), windowSeconds);
   }
 
   /**
@@ -664,7 +681,7 @@ export class AudioRecorder {
    * between sentences excluded. Zero before the first frame arrives.
    */
   getSpeechSeconds(): number {
-    return (this.speechFrameRms.length * this.frameDurationMs) / 1000;
+    return this.speechSeconds;
   }
 
   /** Raw per-frame levels in dBFS of the last recording. Kept for offline analysis. */
