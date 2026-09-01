@@ -34,6 +34,22 @@ const DB_FLOOR = -100;
 // this is roughly half a second of actual speech. Below that the percentiles
 // are noise and we report nothing rather than a number that looks real.
 const MIN_SPEECH_FRAMES_FOR_LOUDNESS = 60;
+// Averaging lengths measured side by side, in milliseconds. A raw frame is
+// ~8 ms, far too short: ordinary speech swings 13-16 dB between vowels and
+// consonants, which would read as shouting. Shouting is sustained level, so
+// the right window is the shortest one at which an ordinary phrase stops
+// jumping around — that is what these candidates are here to find out.
+const CANDIDATE_WINDOW_MS = [250, 500, 1000, 2000];
+// Fewer windows than this and the percentiles describe nothing.
+const MIN_WINDOWS_FOR_STATS = 4;
+// TEMPORARY, for picking the averaging window. Dumps every frame's level to
+// the log so window sizes can be tried offline against real recordings
+// instead of asking the speaker to dictate once per candidate. Costs ~12 KB
+// of log per recording. Delete this and its use in stop() once the window is
+// chosen.
+const DUMP_FRAME_SERIES = true;
+// electron-log handles long lines, but a multi-megabyte one helps nobody.
+const FRAME_SERIES_CHUNK = 400;
 
 // Debug logging interval
 let lastRmsLogTime = 0;
@@ -98,16 +114,35 @@ export interface AudioRecorderOptions {
  * useful figures are differences: this recording's `medianDb` against the
  * speaker's usual level, and `spreadDb` inside a single recording.
  */
-export interface LoudnessStats {
-  /** Typical speech level of the recording. Median, so a cough can't move it. */
+export interface LevelStats {
+  /** Typical level. Median, so a cough can't move it. */
   medianDb: number;
   /** Loud end: the level exceeded 5% of the time. */
   peakDb: number;
   /** Quiet end: the level exceeded 75% of the time. */
   quietDb: number;
-  /** peakDb − quietDb. Rises when a calm start turns into shouting. */
+  /** peakDb − quietDb. */
   spreadDb: number;
-  frameCount: number;
+  /** How many values the percentiles were taken over. */
+  count: number;
+}
+
+export interface LoudnessStats {
+  /**
+   * Raw frames, one per render quantum (~8 ms at 16 kHz). `medianDb` here is a
+   * stable, usable baseline. `spreadDb` is NOT a shouting signal: inside
+   * ordinary speech vowels are loud and consonants quiet, which alone produces
+   * 13–16 dB. Measured, not assumed.
+   */
+  frames: LevelStats;
+  /**
+   * The same speech averaged over windows of different lengths, keyed by
+   * window duration in milliseconds. Longer windows average syllables away and
+   * leave only sustained level — which is what shouting actually is. Which
+   * length is right is an open question, so several are measured side by side.
+   * A window length that didn't fit in the recording is absent.
+   */
+  windows: Record<number, LevelStats>;
 }
 
 export class AudioRecorder {
@@ -135,6 +170,10 @@ export class AudioRecorder {
   // RMS of every frame loud enough to be speech. Silent frames are excluded so
   // pauses between sentences don't drag the recording's loudness down.
   private speechFrameRms: number[] = [];
+  // How much audio one worklet frame covers. Derived from the device's real
+  // sample rate on the first frame, because the rate we asked for is not
+  // always the rate we get.
+  private frameDurationMs: number = 0;
   private loudness: LoudnessStats | null = null;
 
   constructor(deps: AudioRecorderDeps = defaultDeps, options: AudioRecorderOptions = {}) {
@@ -257,6 +296,7 @@ export class AudioRecorder {
       this.pcmChunks = [];
       this.wavBase64 = null;
       this.speechFrameRms = [];
+      this.frameDurationMs = 0;
       this.loudness = null;
       this.mediaRecorder = new MediaRecorder(this.mediaStream, {
         mimeType: this.recordedMimeType,
@@ -298,6 +338,9 @@ export class AudioRecorder {
 
         // Loudness measurement runs regardless of the silence-detection
         // setting — it feeds the "are you shouting" check, not auto-stop.
+        if (this.frameDurationMs === 0 && inputData.length > 0 && this.originalSampleRate > 0) {
+          this.frameDurationMs = (inputData.length / this.originalSampleRate) * 1000;
+        }
         if (rms >= SILENCE_THRESHOLD) {
           this.speechFrameRms.push(rms);
         }
@@ -393,14 +436,32 @@ export class AudioRecorder {
 
     // Measure loudness before any early return below, so a rejected recording
     // still leaves numbers behind to look at.
-    this.loudness = computeLoudnessStats(this.speechFrameRms);
+    this.loudness = computeLoudnessStats(this.speechFrameRms, this.frameDurationMs);
     if (this.loudness) {
-      const l = this.loudness;
+      const f = this.loudness.frames;
       mainLog(
-        `[Loudness] median=${l.medianDb.toFixed(1)}dB peak=${l.peakDb.toFixed(1)}dB ` +
-          `quiet=${l.quietDb.toFixed(1)}dB spread=${l.spreadDb.toFixed(1)}dB ` +
-          `frames=${l.frameCount} duration=${recordingDuration}ms`
+        `[Loudness] frame(${this.frameDurationMs.toFixed(1)}ms) median=${f.medianDb.toFixed(1)}dB ` +
+          `peak=${f.peakDb.toFixed(1)}dB quiet=${f.quietDb.toFixed(1)}dB ` +
+          `spread=${f.spreadDb.toFixed(1)}dB n=${f.count} duration=${recordingDuration}ms`
       );
+      for (const windowMs of CANDIDATE_WINDOW_MS) {
+        const w = this.loudness.windows[windowMs];
+        if (!w) continue;
+        mainLog(
+          `[Loudness] win${windowMs}ms median=${w.medianDb.toFixed(1)}dB ` +
+            `peak=${w.peakDb.toFixed(1)}dB quiet=${w.quietDb.toFixed(1)}dB ` +
+            `spread=${w.spreadDb.toFixed(1)}dB n=${w.count}`
+        );
+      }
+      if (DUMP_FRAME_SERIES) {
+        const series = this.speechFrameRms.map((r) => rmsToDb(r).toFixed(1));
+        const chunks = Math.ceil(series.length / FRAME_SERIES_CHUNK);
+        const tag = `${this.recordingStartTime}`;
+        for (let i = 0; i < chunks; i++) {
+          const part = series.slice(i * FRAME_SERIES_CHUNK, (i + 1) * FRAME_SERIES_CHUNK);
+          mainLog(`[LoudnessSeries] ${tag} ${i + 1}/${chunks} ${part.join(',')}`);
+        }
+      }
     }
 
     // Validate recording duration
@@ -604,23 +665,62 @@ export function quantile(values: number[], fraction: number): number {
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
-/**
- * Summarise a recording's speech frames. Returns null when there were too few
- * to say anything — a recording of pure silence has no loudness.
- */
-export function computeLoudnessStats(speechFrameRms: number[]): LoudnessStats | null {
-  if (speechFrameRms.length < MIN_SPEECH_FRAMES_FOR_LOUDNESS) return null;
-  const db = speechFrameRms.map(rmsToDb);
+/** Percentile summary of a list of amplitudes. */
+export function summariseLevels(rmsValues: number[]): LevelStats {
+  const db = rmsValues.map(rmsToDb);
   const medianDb = quantile(db, 0.5);
   const peakDb = quantile(db, 0.95);
   const quietDb = quantile(db, 0.25);
-  return {
-    medianDb,
-    peakDb,
-    quietDb,
-    spreadDb: peakDb - quietDb,
-    frameCount: db.length,
-  };
+  return { medianDb, peakDb, quietDb, spreadDb: peakDb - quietDb, count: db.length };
+}
+
+/**
+ * Chunk consecutive frames into windows and return each window's RMS.
+ *
+ * Energy is what averages correctly, not amplitude, so the mean is taken over
+ * the squares and the square root applied at the end. A trailing chunk shorter
+ * than the window is dropped — a partial window reads quieter than it was.
+ */
+export function windowRms(frameRms: number[], framesPerWindow: number): number[] {
+  if (framesPerWindow < 1) return [];
+  const out: number[] = [];
+  for (let start = 0; start + framesPerWindow <= frameRms.length; start += framesPerWindow) {
+    let energy = 0;
+    for (let i = start; i < start + framesPerWindow; i++) {
+      energy += frameRms[i] * frameRms[i];
+    }
+    out.push(Math.sqrt(energy / framesPerWindow));
+  }
+  return out;
+}
+
+/**
+ * Summarise a recording's speech frames, both raw and averaged over each
+ * candidate window length. Returns null when there was too little speech to
+ * say anything — a recording of pure silence has no loudness.
+ *
+ * `frameDurationMs` is how much audio one frame covers; it comes from the
+ * device's actual sample rate, which is not always the one we asked for.
+ */
+export function computeLoudnessStats(
+  speechFrameRms: number[],
+  frameDurationMs: number
+): LoudnessStats | null {
+  if (speechFrameRms.length < MIN_SPEECH_FRAMES_FOR_LOUDNESS) return null;
+
+  const windows: Record<number, LevelStats> = {};
+  if (frameDurationMs > 0) {
+    for (const windowMs of CANDIDATE_WINDOW_MS) {
+      const framesPerWindow = Math.max(1, Math.round(windowMs / frameDurationMs));
+      const levels = windowRms(speechFrameRms, framesPerWindow);
+      // Percentiles over one or two windows are theatre, not measurement.
+      if (levels.length >= MIN_WINDOWS_FOR_STATS) {
+        windows[windowMs] = summariseLevels(levels);
+      }
+    }
+  }
+
+  return { frames: summariseLevels(speechFrameRms), windows };
 }
 
 function buildWavBase64FromPcm(

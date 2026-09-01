@@ -16,6 +16,8 @@ import {
   rmsToDb,
   quantile,
   computeLoudnessStats,
+  summariseLevels,
+  windowRms,
 } from './audio';
 
 // Mock audio data generators
@@ -857,38 +859,93 @@ describe('Loudness measurement', () => {
     });
   });
 
+  describe('windowRms', () => {
+    it('averages energy, not amplitude', () => {
+      // 0.1 and 0.3 average to 0.2 by amplitude, but to sqrt(0.05) ≈ 0.2236
+      // by energy — and energy is the one that adds up physically.
+      expect(windowRms([0.1, 0.3], 2)[0]).toBeCloseTo(Math.sqrt(0.05), 6);
+    });
+
+    it('drops a trailing partial window instead of reporting it too quiet', () => {
+      expect(windowRms([1, 1, 1, 1, 1], 2)).toHaveLength(2);
+    });
+
+    it('passes values through unchanged at a window of one frame', () => {
+      expect(windowRms([0.1, 0.2, 0.3], 1)).toEqual([0.1, 0.2, 0.3]);
+    });
+
+    it('returns nothing when the window is longer than the recording', () => {
+      expect(windowRms([0.1, 0.2], 10)).toEqual([]);
+    });
+  });
+
+  describe('summariseLevels', () => {
+    it('reports a flat signal with no spread', () => {
+      const stats = summariseLevels(new Array(100).fill(0.1));
+      expect(stats.medianDb).toBeCloseTo(-20, 1);
+      expect(stats.spreadDb).toBeCloseTo(0, 6);
+      expect(stats.count).toBe(100);
+    });
+
+    it('lets a single loud value move the peak but not the median', () => {
+      const flat = summariseLevels(new Array(200).fill(0.1));
+      const oneCough = summariseLevels([...new Array(200).fill(0.1), 0.9]);
+      expect(oneCough.medianDb).toBeCloseTo(flat.medianDb, 1);
+      expect(oneCough.peakDb).toBeCloseTo(flat.peakDb, 1);
+    });
+  });
+
   describe('computeLoudnessStats', () => {
     const frames = (value: number, count: number) => new Array(count).fill(value);
+    // 128 samples at 16 kHz — what the worklet actually delivers.
+    const FRAME_MS = 8;
 
     it('returns null when there is too little speech to measure', () => {
-      expect(computeLoudnessStats([])).toBeNull();
-      expect(computeLoudnessStats(frames(0.1, MIN_SPEECH_FRAMES_FOR_LOUDNESS - 1))).toBeNull();
+      expect(computeLoudnessStats([], FRAME_MS)).toBeNull();
+      expect(
+        computeLoudnessStats(frames(0.1, MIN_SPEECH_FRAMES_FOR_LOUDNESS - 1), FRAME_MS)
+      ).toBeNull();
     });
 
-    it('reports a flat recording with almost no spread', () => {
-      const stats = computeLoudnessStats(frames(0.1, MIN_SPEECH_FRAMES_FOR_LOUDNESS));
+    it('reports a flat recording with almost no spread at frame level', () => {
+      const stats = computeLoudnessStats(frames(0.1, MIN_SPEECH_FRAMES_FOR_LOUDNESS), FRAME_MS);
       expect(stats).not.toBeNull();
-      expect(stats!.medianDb).toBeCloseTo(-20, 1);
-      expect(stats!.spreadDb).toBeCloseTo(0, 6);
-      expect(stats!.frameCount).toBe(MIN_SPEECH_FRAMES_FOR_LOUDNESS);
+      expect(stats!.frames.medianDb).toBeCloseTo(-20, 1);
+      expect(stats!.frames.spreadDb).toBeCloseTo(0, 6);
     });
 
-    it('shows the spread when a calm start turns into shouting', () => {
-      // Half the recording at 0.05, half at 0.2 — four times the amplitude,
-      // which is about 12 dB.
-      const calmThenLoud = [...frames(0.05, 100), ...frames(0.2, 100)];
-      const stats = computeLoudnessStats(calmThenLoud);
-      expect(stats).not.toBeNull();
-      expect(stats!.spreadDb).toBeCloseTo(12.04, 1);
-      expect(stats!.peakDb).toBeGreaterThan(stats!.quietDb);
+    it('averages syllable-scale swings away as the window grows', () => {
+      // Alternating loud/quiet every frame — the shape of ordinary speech,
+      // where vowels are loud and consonants quiet. At frame level this looks
+      // like a huge spread; averaged over a window it is a steady level.
+      const syllables: number[] = [];
+      for (let i = 0; i < 4000; i++) syllables.push(i % 2 === 0 ? 0.2 : 0.02);
+
+      const stats = computeLoudnessStats(syllables, FRAME_MS)!;
+      expect(stats.frames.spreadDb).toBeGreaterThan(15);
+      expect(stats.windows[250].spreadDb).toBeLessThan(1);
+      expect(stats.windows[1000].spreadDb).toBeLessThan(1);
     });
 
-    it('lets a single loud frame move the peak but not the median', () => {
-      const oneCough = [...frames(0.1, 200), 0.9];
-      const stats = computeLoudnessStats(oneCough)!;
-      const flat = computeLoudnessStats(frames(0.1, 200))!;
-      expect(stats.medianDb).toBeCloseTo(flat.medianDb, 1);
-      expect(stats.peakDb).toBeCloseTo(flat.peakDb, 1);
+    it('keeps a sustained level change visible after averaging', () => {
+      // Half the recording quiet, half loud — four times the amplitude, about
+      // 12 dB. Averaging must not erase this the way it erases syllables.
+      const calmThenLoud = [...frames(0.05, 2000), ...frames(0.2, 2000)];
+      const stats = computeLoudnessStats(calmThenLoud, FRAME_MS)!;
+      expect(stats.windows[500].spreadDb).toBeGreaterThan(10);
+    });
+
+    it('omits window lengths that did not fit in the recording', () => {
+      // 200 frames is 1.6 s of speech: enough windows at 250 ms, none at 2 s.
+      const stats = computeLoudnessStats(frames(0.1, 200), FRAME_MS)!;
+      expect(stats.windows[250]).toBeDefined();
+      expect(stats.windows[2000]).toBeUndefined();
+    });
+
+    it('reports frame stats but no windows when the frame duration is unknown', () => {
+      const stats = computeLoudnessStats(frames(0.1, 200), 0)!;
+      expect(stats.frames.count).toBe(200);
+      expect(Object.keys(stats.windows)).toHaveLength(0);
     });
   });
 });
