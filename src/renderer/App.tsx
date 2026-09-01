@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react';
 import './styles/App.css';
 import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS } from '../lib/audio';
 import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
@@ -9,6 +9,7 @@ import { InfoButton } from './components/InfoButton';
 import { HideButton } from './components/HideButton';
 import { StatsButton } from './components/StatsButton';
 import { AudioLevelRing } from './components/AudioLevelRing';
+import { liveTension, isBaselineUsable, type RageBaseline } from '../lib/rage';
 import type { AppSettings } from './types/electron';
 
 const MESSAGE_TIMEOUT_MS = 2000;
@@ -134,10 +135,39 @@ interface FlashMessage {
   hasErrorDetail: boolean;
 }
 
+// Calm green through amber to angry red. Interpolated rather than stepped so
+// the speaker can see the voice drifting, not just crossing a line — the whole
+// point is to notice it while talking and pull back.
+const TENSION_STOPS: Array<[number, number, number]> = [
+  [76, 175, 80],   // calm  — the same green the success tick uses
+  [255, 152, 0],   // rising
+  [244, 67, 54],   // at the threshold — the red recording has always been
+];
+
+/** Returns "r, g, b" — the bare triplet, so CSS can reuse it for the halo. */
+function tensionRgb(fraction: number): string {
+  const t = Math.min(1, Math.max(0, fraction)) * (TENSION_STOPS.length - 1);
+  const i = Math.min(TENSION_STOPS.length - 2, Math.floor(t));
+  const f = t - i;
+  const [r1, g1, b1] = TENSION_STOPS[i];
+  const [r2, g2, b2] = TENSION_STOPS[i + 1];
+  const mix = (a: number, b: number) => Math.round(a + (b - a) * f);
+  return `${mix(r1, r2)}, ${mix(g1, g2)}, ${mix(b1, b2)}`;
+}
+
 export function App() {
   const [state, setState] = useState<AppState>('idle');
   const [message, setMessage] = useState<FlashMessage | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+  // 0 = speaking as usual, 1 = at the nervousness threshold. Drives the colour
+  // of the microphone while recording. Stays 0 while there is no baseline.
+  const [voiceTension, setVoiceTension] = useState<number>(0);
+  // The ref is what the audio callback reads; the flag is what the render
+  // reads, because a ref filling in asynchronously would not repaint the
+  // button on its own — and a calm speaker produces no tension updates to
+  // repaint it either.
+  const rageBaselineRef = useRef<RageBaseline | null>(null);
+  const [hasRageBaseline, setHasRageBaseline] = useState<boolean>(false);
   const [appVersion, setAppVersion] = useState<string>('');
   const [hotkey, setHotkey] = useState<string>('CommandOrControl+Shift+R');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -491,6 +521,7 @@ export function App() {
     // Reset audio level visualization
     audioLevelRef.current = 0;
     setAudioLevel(0);
+    setVoiceTension(0);
 
     try {
       const audioBase64 = await recorderRef.current.stop();
@@ -632,6 +663,18 @@ export function App() {
         stopRecordingAndTranscribe();
       });
       // Set up audio level callback for visualization with smoothing
+      // The live reading is a distance from the speaker's baseline, so fetch it
+      // once per recording rather than per frame. Fire-and-forget: a missing
+      // baseline just means the microphone keeps its usual colour.
+      rageBaselineRef.current = null;
+      setHasRageBaseline(false);
+      void window.electronAPI.nervousnessBaseline?.().then((baseline) => {
+        rageBaselineRef.current = baseline ?? null;
+        setHasRageBaseline(isBaselineUsable(baseline ?? null));
+      });
+      recorderRef.current.setOnVoiceTilt((rollingTilt) => {
+        setVoiceTension(liveTension(rollingTilt, rageBaselineRef.current));
+      });
       recorderRef.current.setOnAudioLevel((level) => {
         const current = audioLevelRef.current;
         let smoothed: number;
@@ -934,6 +977,14 @@ export function App() {
         {state === 'recording' && <AudioLevelRing level={audioLevel} />}
         <button
           className={`mic-button ${state}`}
+          style={
+            state === 'recording' && hasRageBaseline
+              ? ({
+                  background: `rgb(${tensionRgb(voiceTension)})`,
+                  '--mic-glow-rgb': tensionRgb(voiceTension),
+                } as CSSProperties)
+              : undefined
+          }
           onClick={handleToggleRecording}
           aria-label={
             state === 'idle' || state === 'success'

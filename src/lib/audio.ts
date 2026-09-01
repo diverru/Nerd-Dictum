@@ -64,6 +64,14 @@ const TILT_MAX_HZ = 6000;
 const TILT_FRAME_STRIDE = 4;
 // Below this many spectra the median is not worth reporting.
 const MIN_TILT_SAMPLES = 30;
+// Rolling window for the live indicator, in spectra. At ~30 a second this is
+// roughly two seconds of speech: long enough that one hard consonant cannot
+// swing the colour, short enough that the speaker sees themselves getting
+// louder while it is happening rather than afterwards.
+const LIVE_TILT_WINDOW = 60;
+// Emit at most this often, in spectra, so the indicator updates ~10 times a
+// second instead of re-rendering on every measurement.
+const LIVE_TILT_EMIT_EVERY = 3;
 // Dumps every frame's level into the log. Superseded by saved recordings —
 // the frame series now travels in the JSON sidecar next to the WAV, where it
 // costs nothing and sits beside the audio it describes. Left here as a switch
@@ -112,6 +120,8 @@ const defaultDeps: AudioRecorderDeps = {
 
 export type SilenceStopCallback = () => void;
 export type AudioLevelCallback = (rms: number) => void;
+/** Rolling median spectral tilt during recording, in dB per kHz. */
+export type VoiceTiltCallback = (rollingTiltDbPerKhz: number) => void;
 
 export interface AudioRecorderOptions {
   deviceId?: string;
@@ -192,6 +202,7 @@ export class AudioRecorder {
   private silenceStartTime: number | null = null;
   private onSilenceStop: SilenceStopCallback | null = null;
   private onAudioLevel: AudioLevelCallback | null = null;
+  private onVoiceTilt: VoiceTiltCallback | null = null;
   private silenceStopFired: boolean = false;
   private options: AudioRecorderOptions;
   private lastSilenceLogTime: number = Number.NEGATIVE_INFINITY;
@@ -236,6 +247,16 @@ export class AudioRecorder {
    */
   setOnAudioLevel(callback: AudioLevelCallback | null): void {
     this.onAudioLevel = callback;
+  }
+
+  /**
+   * Set a callback for the rolling spectral tilt during recording — the live
+   * "how harsh does this sound right now" reading. Fires about ten times a
+   * second once enough spectra have accumulated, and not at all on a device
+   * with no analyser.
+   */
+  setOnVoiceTilt(callback: VoiceTiltCallback | null): void {
+    this.onVoiceTilt = callback;
   }
 
   /**
@@ -391,7 +412,10 @@ export class AudioRecorder {
           ) {
             this.analyserNode.getFloatFrequencyData(this.spectrumDb);
             const tilt = spectralTilt(this.spectrumDb, this.originalSampleRate / TILT_FFT_SIZE);
-            if (tilt !== null) this.tiltSamples.push(tilt);
+            if (tilt !== null) {
+              this.tiltSamples.push(tilt);
+              this.emitLiveTilt();
+            }
           }
         }
 
@@ -621,6 +645,18 @@ export class AudioRecorder {
   /** Label of the microphone the last recording came from, e.g. "Default - AirWave". */
   getDeviceLabel(): string {
     return this.deviceLabel;
+  }
+
+  /**
+   * Median tilt over the last couple of seconds, pushed to the live callback.
+   * Silent until there are enough spectra for the median to mean anything.
+   */
+  private emitLiveTilt(): void {
+    if (!this.onVoiceTilt) return;
+    if (this.tiltSamples.length < LIVE_TILT_WINDOW) return;
+    if (this.tiltSamples.length % LIVE_TILT_EMIT_EVERY !== 0) return;
+    const window = this.tiltSamples.slice(-LIVE_TILT_WINDOW);
+    this.onVoiceTilt(quantile(window, 0.5));
   }
 
   /**

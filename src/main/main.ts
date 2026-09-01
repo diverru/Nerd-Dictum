@@ -23,6 +23,7 @@ import {
   recordAndScore,
   resetRageBaseline,
   getRageHistoryCount,
+  getRageBaseline,
 } from './rage-baseline';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1971,6 +1972,11 @@ ipcMain.handle('reset-nervousness-baseline', () => {
 });
 
 ipcMain.handle('nervousness-baseline-count', () => getRageHistoryCount());
+
+// The renderer needs the baseline to colour the microphone while recording:
+// the live reading is a distance from it, and the reading is worthless without
+// it. Fetched once per recording, not per frame.
+ipcMain.handle('nervousness-baseline', () => getRageBaseline());
 
 ipcMain.handle('open-wake-word-folder', () => {
   const dir = wakeWordCustomDir();

@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('score-nervousness', tiltDbPerKhz, speechSeconds),
   resetNervousnessBaseline: () => ipcRenderer.invoke('reset-nervousness-baseline'),
   nervousnessBaselineCount: () => ipcRenderer.invoke('nervousness-baseline-count'),
+  nervousnessBaseline: () => ipcRenderer.invoke('nervousness-baseline'),
   debugRecordingEnabled: () => ipcRenderer.invoke('debug-recording-enabled'),
   saveDebugRecording: (wavBase64: string, meta: unknown) =>
     ipcRenderer.invoke('save-debug-recording', wavBase64, meta),

@@ -15,7 +15,9 @@ import fs from 'fs';
 import electronLog from 'electron-log';
 import {
   appendSample,
+  buildBaseline,
   scoreRecording,
+  type RageBaseline,
   type RageSample,
   type RageVerdict,
 } from '../lib/rage';
@@ -96,6 +98,12 @@ export function resetRageBaseline(): void {
   history = [];
   save();
   log('[RageBaseline] reset');
+}
+
+/** The current baseline, for the live indicator during recording. */
+export function getRageBaseline(): RageBaseline {
+  if (!loaded) loadRageBaseline();
+  return buildBaseline(history);
 }
 
 export function getRageHistoryCount(): number {

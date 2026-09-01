@@ -10,6 +10,10 @@ import {
   MIN_SPEECH_SECONDS,
   MIN_SPREAD,
   DEFAULT_THRESHOLD,
+  tensionFraction,
+  liveTension,
+  isBaselineUsable,
+  buildBaseline as build,
   type RageSample,
 } from './rage';
 
@@ -176,5 +180,62 @@ describe('appendSample', () => {
     const before = CALM.length;
     appendSample(CALM, { tiltDbPerKhz: -8.8, at: 9999 });
     expect(CALM).toHaveLength(before);
+  });
+});
+
+describe('tensionFraction', () => {
+  it('is zero at or below normal', () => {
+    expect(tensionFraction(0)).toBe(0);
+    expect(tensionFraction(-3)).toBe(0);
+  });
+
+  it('reaches one at the threshold and stays there', () => {
+    expect(tensionFraction(DEFAULT_THRESHOLD)).toBe(1);
+    expect(tensionFraction(DEFAULT_THRESHOLD * 5)).toBe(1);
+  });
+
+  it('is linear in between — no drama on small deviations', () => {
+    expect(tensionFraction(DEFAULT_THRESHOLD / 2)).toBeCloseTo(0.5, 6);
+  });
+
+  it('survives a nonsense score or threshold', () => {
+    expect(tensionFraction(NaN)).toBe(0);
+    expect(tensionFraction(1, 0)).toBe(0);
+  });
+});
+
+describe('liveTension', () => {
+  const baseline = build(CALM);
+
+  it('reads zero for a voice at the usual tilt', () => {
+    expect(liveTension(baseline.centre, baseline)).toBe(0);
+  });
+
+  it('rises as the voice gets harsher', () => {
+    const mild = liveTension(baseline.centre + baseline.spread, baseline);
+    const harsh = liveTension(baseline.centre + baseline.spread * 2, baseline);
+    expect(mild).toBeGreaterThan(0);
+    expect(harsh).toBeGreaterThan(mild);
+    expect(harsh).toBe(1);
+  });
+
+  it('reports zero rather than guessing when there is no baseline', () => {
+    expect(liveTension(-6, null)).toBe(0);
+    expect(liveTension(-6, build(CALM.slice(0, 3)))).toBe(0);
+  });
+});
+
+describe('isBaselineUsable', () => {
+  it('rejects a missing baseline', () => {
+    expect(isBaselineUsable(null)).toBe(false);
+  });
+
+  it('rejects one built from too few recordings', () => {
+    expect(isBaselineUsable(build(CALM.slice(0, MIN_BASELINE_SAMPLES - 1)))).toBe(false);
+  });
+
+  it('accepts one at the minimum and above', () => {
+    expect(isBaselineUsable(build(CALM.slice(0, MIN_BASELINE_SAMPLES)))).toBe(true);
+    expect(isBaselineUsable(build(CALM))).toBe(true);
   });
 });

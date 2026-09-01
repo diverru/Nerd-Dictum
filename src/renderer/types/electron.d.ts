@@ -54,6 +54,8 @@ export interface ElectronAPI {
   /** Forgets the baseline — for a new microphone, or one gone wrong. */
   resetNervousnessBaseline?: () => Promise<boolean>;
   nervousnessBaselineCount?: () => Promise<number>;
+  /** The speaker's current voice baseline, for colouring the mic while recording. */
+  nervousnessBaseline?: () => Promise<{ centre: number; spread: number; count: number }>;
   /** True when the marker file ~/.nerd-dictum/keep-recordings exists. */
   debugRecordingEnabled?: () => Promise<boolean>;
   /** Writes the WAV plus a JSON sidecar to ~/.nerd-dictum/recordings. No-op when capture is off. */

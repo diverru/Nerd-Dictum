@@ -166,3 +166,37 @@ export function scoreRecording(input: ScoreInput): RageVerdict {
 export function appendSample(history: RageSample[], sample: RageSample): RageSample[] {
   return [...history, sample].slice(-BASELINE_WINDOW);
 }
+
+/**
+ * Map a score onto 0..1 for the live indicator: 0 at or below the speaker's
+ * normal, 1 once the threshold is reached.
+ *
+ * Deliberately linear and clamped. A curve would make small deviations look
+ * dramatic, and the whole point of the indicator is that the speaker can trust
+ * what it shows and say whether it matches how they actually felt.
+ */
+export function tensionFraction(score: number, threshold: number = DEFAULT_THRESHOLD): number {
+  if (!Number.isFinite(score) || threshold <= 0) return 0;
+  return Math.min(1, Math.max(0, score / threshold));
+}
+
+/** True once the baseline holds enough recordings to be worth comparing against. */
+export function isBaselineUsable(baseline: RageBaseline | null): boolean {
+  return !!baseline && baseline.count >= MIN_BASELINE_SAMPLES;
+}
+
+/**
+ * Live score during a recording, from a rolling tilt against a known baseline.
+ * Returns 0 when there is no baseline yet — an unknown must never render as
+ * calm-and-verified, and the caller decides how to show "no data".
+ */
+export function liveTension(
+  rollingTiltDbPerKhz: number,
+  baseline: RageBaseline | null,
+  threshold: number = DEFAULT_THRESHOLD
+): number {
+  if (!isBaselineUsable(baseline)) return 0;
+  if (!Number.isFinite(rollingTiltDbPerKhz)) return 0;
+  const score = (rollingTiltDbPerKhz - baseline!.centre) / baseline!.spread;
+  return tensionFraction(score, threshold);
+}
