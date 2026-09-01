@@ -185,6 +185,7 @@ export function App() {
   // produced a WAV — scoring must work regardless of both.
   const pendingVoiceRef = useRef<{
     tiltDbPerKhz: number | null;
+    recordingSeconds: number;
     speechSeconds: number;
   } | null>(null);
   const lastAudioRef = useRef<string | null>(null);
@@ -438,7 +439,11 @@ export function App() {
       const voice = pendingVoiceRef.current;
       pendingVoiceRef.current = null;
       if (voice && window.electronAPI.scoreNervousness) {
-        void window.electronAPI.scoreNervousness(voice.tiltDbPerKhz, voice.speechSeconds);
+        void window.electronAPI.scoreNervousness(
+          voice.tiltDbPerKhz,
+          voice.recordingSeconds,
+          voice.speechSeconds
+        );
       }
 
       // Debug capture. Fire-and-forget and last in the side-effect block: it
@@ -547,6 +552,7 @@ export function App() {
       const loudness = recorderRef.current?.getLoudnessStats() ?? null;
       pendingVoiceRef.current = {
         tiltDbPerKhz: loudness?.tiltDbPerKhz ?? null,
+        recordingSeconds: recordingDuration / 1000,
         speechSeconds: recorderRef.current?.getSpeechSeconds() ?? 0,
       };
 
@@ -668,12 +674,33 @@ export function App() {
       // baseline just means the microphone keeps its usual colour.
       rageBaselineRef.current = null;
       setHasRageBaseline(false);
+      if (!window.electronAPI.nervousnessBaseline) {
+        // Older preload: the tint cannot work and silence would look like a
+        // dead feature rather than a stale build.
+        window.electronAPI.log?.('[Tint] nervousnessBaseline IPC missing — app needs a restart');
+      }
       void window.electronAPI.nervousnessBaseline?.().then((baseline) => {
         rageBaselineRef.current = baseline ?? null;
-        setHasRageBaseline(isBaselineUsable(baseline ?? null));
+        const usable = isBaselineUsable(baseline ?? null);
+        setHasRageBaseline(usable);
+        window.electronAPI.log?.(
+          `[Tint] baseline n=${baseline?.count ?? 0} centre=${baseline?.centre?.toFixed(2) ?? 'n/a'} ` +
+            `spread=${baseline?.spread?.toFixed(2) ?? 'n/a'} usable=${usable}`
+        );
       });
+      let tiltEmissions = 0;
       recorderRef.current.setOnVoiceTilt((rollingTilt, windowSeconds) => {
-        setVoiceTension(liveTension(rollingTilt, rageBaselineRef.current, windowSeconds));
+        const tension = liveTension(rollingTilt, rageBaselineRef.current, windowSeconds);
+        setVoiceTension(tension);
+        // First emission and then sparsely: enough to prove the path is live
+        // without a line per frame.
+        tiltEmissions++;
+        if (tiltEmissions === 1 || tiltEmissions % 20 === 0) {
+          window.electronAPI.log?.(
+            `[Tint] #${tiltEmissions} tilt=${rollingTilt.toFixed(2)} win=${windowSeconds.toFixed(1)}s ` +
+              `tension=${tension.toFixed(2)}`
+          );
+        }
       });
       recorderRef.current.setOnAudioLevel((level) => {
         const current = audioLevelRef.current;

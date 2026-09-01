@@ -65,26 +65,32 @@ export const BASELINE_WINDOW = 50;
 export const MIN_BASELINE_SAMPLES = 6;
 
 /**
- * Only recordings with at least this much speech join the baseline. Kept equal
- * to MIN_SPEECH_SECONDS below: a recording we would not trust enough to judge
- * is not one to define "normal" with either.
+ * Only recordings at least this long join the baseline. Kept equal to
+ * MIN_RECORDING_SECONDS below: one we would not trust enough to judge is not
+ * one to define "normal" with either.
  */
-export const MIN_SPEECH_FOR_BASELINE = 10;
+export const MIN_RECORDING_FOR_BASELINE = 10;
 
 /**
- * Recordings with less speech than this are not judged at all.
+ * Recordings shorter than this are not judged at all.
  *
- * Ten seconds is the speaker's own call, and it is the right one: a genuine
- * outburst is not two seconds long, and a wrong verdict on a throwaway phrase
- * costs more trust than a missed one gains. The damping in `effectiveSpread`
- * would have handled shorter clips arithmetically, but arithmetic that nobody
- * believes is worth nothing.
+ * Measured against how long the recording ACTUALLY RAN, not how much of it
+ * cleared the silence threshold. Those two are very different: on real
+ * dictation a fifteen-second recording carries about five and a half seconds
+ * of frames above the threshold, because pauses, breaths and the quiet tails
+ * of words fall below it. Gating on the second number would have meant
+ * demanding nearly half a minute of talking while the speaker, reasonably,
+ * counted ten seconds on the clock and expected a verdict.
+ *
+ * Ten seconds is the speaker's call, and it is the right one: a genuine
+ * outburst is not two seconds long, and a verdict nobody believes is worth
+ * nothing.
  *
  * This governs the VERDICT only. The live colour on the microphone keeps
  * updating from the first moments of any recording — it reports what is
  * happening now, and makes no claim about the recording as a whole.
  */
-export const MIN_SPEECH_SECONDS = 10;
+export const MIN_RECORDING_SECONDS = 10;
 
 /**
  * How much the tilt median wobbles purely from having little speech to average,
@@ -165,7 +171,13 @@ export function buildBaseline(samples: RageSample[]): RageBaseline {
 export interface ScoreInput {
   /** This recording's tilt, or null when it could not be measured. */
   tiltDbPerKhz: number | null;
-  /** How much actual speech the recording held. */
+  /** How long the recording ran, wall clock. Decides whether to judge it. */
+  recordingSeconds: number;
+  /**
+   * How much of it cleared the silence threshold. Only feeds the noise model
+   * in `effectiveSpread` — it is what the tilt median was averaged over, and
+   * it is much smaller than the recording length.
+   */
   speechSeconds: number;
   /** Every past sample, newest last. */
   history: RageSample[];
@@ -180,13 +192,13 @@ export interface ScoreInput {
  * is energy moving up the spectrum, which is what strain sounds like.
  */
 export function scoreRecording(input: ScoreInput): RageVerdict {
-  const { tiltDbPerKhz, speechSeconds, history } = input;
+  const { tiltDbPerKhz, recordingSeconds, speechSeconds, history } = input;
   const threshold = input.threshold ?? DEFAULT_THRESHOLD;
 
   if (tiltDbPerKhz === null || !Number.isFinite(tiltDbPerKhz)) {
     return { score: 0, hot: false, reason: 'no-tilt', baseline: null };
   }
-  if (speechSeconds < MIN_SPEECH_SECONDS) {
+  if (recordingSeconds < MIN_RECORDING_SECONDS) {
     return { score: 0, hot: false, reason: 'too-short', baseline: null };
   }
 
@@ -253,11 +265,11 @@ export function liveTension(
 /** True when this recording is solid enough to become part of the baseline. */
 export function qualifiesForBaseline(
   tiltDbPerKhz: number | null,
-  speechSeconds: number
+  recordingSeconds: number
 ): boolean {
   return (
     tiltDbPerKhz !== null &&
     Number.isFinite(tiltDbPerKhz) &&
-    speechSeconds >= MIN_SPEECH_FOR_BASELINE
+    recordingSeconds >= MIN_RECORDING_FOR_BASELINE
   );
 }

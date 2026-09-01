@@ -7,7 +7,7 @@ import {
   appendSample,
   BASELINE_WINDOW,
   MIN_BASELINE_SAMPLES,
-  MIN_SPEECH_SECONDS,
+  MIN_RECORDING_SECONDS,
   MIN_SPREAD,
   DEFAULT_THRESHOLD,
   tensionFraction,
@@ -15,7 +15,7 @@ import {
   isBaselineUsable,
   effectiveSpread,
   qualifiesForBaseline,
-  MIN_SPEECH_FOR_BASELINE,
+  MIN_RECORDING_FOR_BASELINE,
   TILT_SLICE_NOISE_K,
   buildBaseline as build,
   type RageSample,
@@ -100,7 +100,7 @@ describe('buildBaseline', () => {
 
 describe('scoreRecording', () => {
   it('scores a calm recording near zero', () => {
-    const v = scoreRecording({ tiltDbPerKhz: -9.3, speechSeconds: 12, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: -9.3, recordingSeconds: 30, speechSeconds: 12, history: CALM });
     expect(Math.abs(v.score)).toBeLessThan(1);
     expect(v.hot).toBe(false);
   });
@@ -108,25 +108,30 @@ describe('scoreRecording', () => {
   it('flags a harsher voice as hot', () => {
     // Angry recordings on the labelled set sat 1.5-2.5 dB/kHz above calm,
     // over roughly ten seconds of speech each.
-    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 10, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: -7.2, recordingSeconds: 25, speechSeconds: 10, history: CALM });
     expect(v.score).toBeGreaterThan(DEFAULT_THRESHOLD);
     expect(v.hot).toBe(true);
   });
 
   it('refuses a clip under the ten-second bar outright', () => {
-    const v = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 5, history: CALM });
+    const v = scoreRecording({
+      tiltDbPerKhz: -7.2,
+      recordingSeconds: 5,
+      speechSeconds: 2,
+      history: CALM,
+    });
     expect(v.reason).toBe('too-short');
     expect(v.hot).toBe(false);
   });
 
   it('treats a softer-than-usual voice as calm, not as a deviation', () => {
-    const v = scoreRecording({ tiltDbPerKhz: -11.5, speechSeconds: 12, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: -11.5, recordingSeconds: 30, speechSeconds: 12, history: CALM });
     expect(v.score).toBeLessThan(0);
     expect(v.hot).toBe(false);
   });
 
   it('refuses to judge a recording with no tilt measurement', () => {
-    const v = scoreRecording({ tiltDbPerKhz: null, speechSeconds: 12, history: CALM });
+    const v = scoreRecording({ tiltDbPerKhz: null, recordingSeconds: 30, speechSeconds: 12, history: CALM });
     expect(v.reason).toBe('no-tilt');
     expect(v.hot).toBe(false);
   });
@@ -134,7 +139,8 @@ describe('scoreRecording', () => {
   it('refuses to judge a recording that is too short', () => {
     const v = scoreRecording({
       tiltDbPerKhz: -6,
-      speechSeconds: MIN_SPEECH_SECONDS - 0.1,
+      recordingSeconds: MIN_RECORDING_SECONDS - 0.1,
+      speechSeconds: 4,
       history: CALM,
     });
     expect(v.reason).toBe('too-short');
@@ -144,7 +150,7 @@ describe('scoreRecording', () => {
   it('refuses to judge until the baseline has enough recordings', () => {
     const v = scoreRecording({
       tiltDbPerKhz: -6,
-      speechSeconds: 12,
+      recordingSeconds: 30, speechSeconds: 12,
       history: CALM.slice(0, MIN_BASELINE_SAMPLES - 1),
     });
     expect(v.reason).toBe('baseline-too-small');
@@ -153,7 +159,7 @@ describe('scoreRecording', () => {
   });
 
   it('honours a custom threshold', () => {
-    const input = { tiltDbPerKhz: -8.7, speechSeconds: 10, history: CALM };
+    const input = { tiltDbPerKhz: -8.7, recordingSeconds: 25, speechSeconds: 10, history: CALM };
     expect(scoreRecording({ ...input, threshold: 10 }).hot).toBe(false);
     expect(scoreRecording({ ...input, threshold: 0.5 }).hot).toBe(true);
   });
@@ -163,10 +169,10 @@ describe('scoreRecording', () => {
     // moves every tilt by a constant. Scores must not care.
     const shift = -1.21;
     const shifted = CALM.map((s) => ({ ...s, tiltDbPerKhz: s.tiltDbPerKhz + shift }));
-    const here = scoreRecording({ tiltDbPerKhz: -7.2, speechSeconds: 10, history: CALM });
+    const here = scoreRecording({ tiltDbPerKhz: -7.2, recordingSeconds: 25, speechSeconds: 10, history: CALM });
     const there = scoreRecording({
       tiltDbPerKhz: -7.2 + shift,
-      speechSeconds: 10,
+      recordingSeconds: 25, speechSeconds: 10,
       history: shifted,
     });
     expect(there.score).toBeCloseTo(here.score, 6);
@@ -284,15 +290,15 @@ describe('isBaselineUsable', () => {
 
 describe('qualifiesForBaseline', () => {
   it('accepts an ordinary dictation', () => {
-    expect(qualifiesForBaseline(-9.3, 20)).toBe(true);
+    expect(qualifiesForBaseline(-9.3, 25)).toBe(true);
   });
 
-  it('rejects a clip too short to measure reliably', () => {
-    expect(qualifiesForBaseline(-9.3, MIN_SPEECH_FOR_BASELINE - 0.1)).toBe(false);
+  it('rejects a recording too short to measure reliably', () => {
+    expect(qualifiesForBaseline(-9.3, MIN_RECORDING_FOR_BASELINE - 0.1)).toBe(false);
   });
 
   it('rejects a recording whose tilt could not be measured', () => {
-    expect(qualifiesForBaseline(null, 20)).toBe(false);
-    expect(qualifiesForBaseline(NaN, 20)).toBe(false);
+    expect(qualifiesForBaseline(null, 25)).toBe(false);
+    expect(qualifiesForBaseline(NaN, 25)).toBe(false);
   });
 });

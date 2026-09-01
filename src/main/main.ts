@@ -1947,12 +1947,13 @@ ipcMain.handle('save-debug-recording', (_event, wavBase64: string, meta: unknown
 // be watched against real dictation before it is allowed to act.
 ipcMain.handle(
   'score-nervousness',
-  (_event, tiltDbPerKhz: number | null, speechSeconds: number) => {
-    const verdict = recordAndScore(tiltDbPerKhz, speechSeconds);
+  (_event, tiltDbPerKhz: number | null, recordingSeconds: number, speechSeconds: number) => {
+    const verdict = recordAndScore(tiltDbPerKhz, recordingSeconds, speechSeconds);
     const tilt = tiltDbPerKhz === null ? 'n/a' : `${tiltDbPerKhz.toFixed(2)}`;
     if (verdict.reason) {
       log(
-        `[Rage] no verdict (${verdict.reason}) tilt=${tilt} speech=${speechSeconds.toFixed(1)}s ` +
+        `[Rage] no verdict (${verdict.reason}) tilt=${tilt} ` +
+          `rec=${recordingSeconds.toFixed(1)}s speech=${speechSeconds.toFixed(1)}s ` +
           `baseline=${verdict.baseline?.count ?? 0}`
       );
     } else {

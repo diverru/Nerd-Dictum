@@ -44,6 +44,7 @@ export interface ElectronAPI {
   /** Scores one recording against the speaker's own baseline, then folds it in. */
   scoreNervousness?: (
     tiltDbPerKhz: number | null,
+    recordingSeconds: number,
     speechSeconds: number
   ) => Promise<{
     score: number;

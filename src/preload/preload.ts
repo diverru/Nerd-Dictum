@@ -20,8 +20,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   parakeetStatus: () => ipcRenderer.invoke('parakeet-status'),
   parakeetLoadNow: () => ipcRenderer.invoke('parakeet-load-now'),
   transcribeLocalStt: (wavBase64: string) => ipcRenderer.invoke('transcribe-local-stt', wavBase64),
-  scoreNervousness: (tiltDbPerKhz: number | null, speechSeconds: number) =>
-    ipcRenderer.invoke('score-nervousness', tiltDbPerKhz, speechSeconds),
+  scoreNervousness: (
+    tiltDbPerKhz: number | null,
+    recordingSeconds: number,
+    speechSeconds: number
+  ) => ipcRenderer.invoke('score-nervousness', tiltDbPerKhz, recordingSeconds, speechSeconds),
   resetNervousnessBaseline: () => ipcRenderer.invoke('reset-nervousness-baseline'),
   nervousnessBaselineCount: () => ipcRenderer.invoke('nervousness-baseline-count'),
   nervousnessBaseline: () => ipcRenderer.invoke('nervousness-baseline'),

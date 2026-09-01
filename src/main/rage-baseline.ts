@@ -74,16 +74,23 @@ function save(): void {
  */
 export function recordAndScore(
   tiltDbPerKhz: number | null,
+  recordingSeconds: number,
   speechSeconds: number,
   threshold?: number
 ): RageVerdict {
   if (!loaded) loadRageBaseline();
 
-  const verdict = scoreRecording({ tiltDbPerKhz, speechSeconds, history, threshold });
+  const verdict = scoreRecording({
+    tiltDbPerKhz,
+    recordingSeconds,
+    speechSeconds,
+    history,
+    threshold,
+  });
 
-  // Short clips are scored but not remembered: their tilt is noisy, and that
-  // noise would widen the baseline spread and blunt every later verdict.
-  if (qualifiesForBaseline(tiltDbPerKhz, speechSeconds)) {
+  // Short recordings are neither judged nor remembered: their tilt is noisy,
+  // and that noise would widen the baseline spread and blunt later verdicts.
+  if (qualifiesForBaseline(tiltDbPerKhz, recordingSeconds)) {
     history = appendSample(history, { tiltDbPerKhz: tiltDbPerKhz as number, at: Date.now() });
     save();
   }
