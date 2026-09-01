@@ -15,6 +15,8 @@ import {
   isBaselineUsable,
   effectiveSpread,
   qualifiesForBaseline,
+  nextStreak,
+  shouldBlock,
   MIN_RECORDING_FOR_BASELINE,
   TILT_SLICE_NOISE_K,
   buildBaseline as build,
@@ -300,5 +302,40 @@ describe('qualifiesForBaseline', () => {
   it('rejects a recording whose tilt could not be measured', () => {
     expect(qualifiesForBaseline(null, 25)).toBe(false);
     expect(qualifiesForBaseline(NaN, 25)).toBe(false);
+  });
+});
+
+describe('nextStreak', () => {
+  const verdict = (over: Partial<ReturnType<typeof scoreRecording>>) =>
+    ({ score: 0, hot: false, baseline: null, ...over }) as ReturnType<typeof scoreRecording>;
+
+  it('counts up on a tense recording', () => {
+    expect(nextStreak(2, verdict({ hot: true }))).toBe(3);
+  });
+
+  it('resets on a calm one', () => {
+    expect(nextStreak(2, verdict({ hot: false }))).toBe(0);
+  });
+
+  it('leaves the streak alone when there was no verdict', () => {
+    // A two-word "yes" between two furious recordings must not clear the count.
+    expect(nextStreak(2, verdict({ reason: 'too-short' }))).toBe(2);
+    expect(nextStreak(2, verdict({ reason: 'no-tilt' }))).toBe(2);
+    expect(nextStreak(2, verdict({ reason: 'baseline-too-small' }))).toBe(2);
+  });
+});
+
+describe('shouldBlock', () => {
+  it('fires at the configured streak and beyond', () => {
+    expect(shouldBlock(3, 3)).toBe(true);
+    expect(shouldBlock(4, 3)).toBe(true);
+  });
+
+  it('does not fire below it', () => {
+    expect(shouldBlock(2, 3)).toBe(false);
+  });
+
+  it('never fires when blocking is configured off', () => {
+    expect(shouldBlock(99, 0)).toBe(false);
   });
 });

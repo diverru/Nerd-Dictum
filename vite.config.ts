@@ -21,6 +21,7 @@ export default defineConfig({
         hide: resolve(__dirname, 'src/renderer/hide.html'),
         stats: resolve(__dirname, 'src/renderer/stats.html'),
         'error-detail': resolve(__dirname, 'src/renderer/error-detail.html'),
+        cooldown: resolve(__dirname, 'src/renderer/cooldown.html'),
       },
     },
   },

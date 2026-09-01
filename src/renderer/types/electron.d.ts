@@ -57,6 +57,12 @@ export interface ElectronAPI {
   nervousnessBaselineCount?: () => Promise<number>;
   /** The speaker's current voice baseline, for colouring the mic while recording. */
   nervousnessBaseline?: () => Promise<{ centre: number; spread: number; count: number }>;
+  /** Shows the block right now, at the configured duration. */
+  previewCooldown?: () => Promise<boolean>;
+  /** Details of the block being shown, delivered once the window is up. */
+  onCooldownInfo?: (
+    callback: (info: { seconds: number; streak: number; quote?: string }) => void
+  ) => () => void;
   /** True when the marker file ~/.nerd-dictum/keep-recordings exists. */
   debugRecordingEnabled?: () => Promise<boolean>;
   /** Writes the WAV plus a JSON sidecar to ~/.nerd-dictum/recordings. No-op when capture is off. */

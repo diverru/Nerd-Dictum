@@ -290,3 +290,21 @@ export function qualifiesForBaseline(
     recordingSeconds >= MIN_RECORDING_FOR_BASELINE
   );
 }
+
+/**
+ * The streak after this recording. One sharp recording is a moment; several
+ * in a row is a state, and only a state is worth interrupting someone over.
+ *
+ * A recording that got no verdict — too short, no tilt, no baseline yet —
+ * leaves the streak alone rather than resetting it. Otherwise a two-word
+ * "yes" between two furious ones would quietly clear the count.
+ */
+export function nextStreak(current: number, verdict: RageVerdict): number {
+  if (verdict.reason) return current;
+  return verdict.hot ? current + 1 : 0;
+}
+
+/** Whether this streak has earned a block. */
+export function shouldBlock(streak: number, streakForBlock: number): boolean {
+  return streakForBlock > 0 && streak >= streakForBlock;
+}

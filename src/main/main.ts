@@ -18,7 +18,13 @@ import { ParakeetService, type ParakeetStatus } from './parakeet-service';
 import { polishViaProvider, type PolishOptions } from '../lib/polish';
 import type { LLMProviderId } from '../shared/types';
 import type { AppSettings } from '../shared/types';
-import { DEFAULT_THRESHOLD } from '../lib/rage';
+import { DEFAULT_THRESHOLD, nextStreak, shouldBlock } from '../lib/rage';
+import {
+  startCooldown,
+  endCooldown,
+  isCooldownActive,
+  registerCooldownShutdown,
+} from './cooldown';
 import {
   loadRageBaseline,
   recordAndScore,
@@ -1602,6 +1608,7 @@ app.whenReady().then(() => {
   // Load transcript history for context feature
   loadTranscriptHistory();
   loadRageBaseline();
+  registerCooldownShutdown(log);
 
   // Load usage statistics
   loadStats();
@@ -1981,9 +1988,31 @@ ipcMain.handle(
           `tilt=${tilt} baseline=${b.centre.toFixed(2)}+-${b.spread.toFixed(2)} n=${b.count}`
       );
     }
+
+    const settings = appSettings.nervousness ?? DEFAULT_SETTINGS.nervousness;
+    hotStreak = nextStreak(hotStreak, verdict);
+    if (
+      settings.enabled &&
+      shouldBlock(hotStreak, settings.streakForBlock) &&
+      !isCooldownActive()
+    ) {
+      // Cleared before the block, not after: whatever happens to the window,
+      // the user does not come back to a streak that fires again immediately.
+      const streak = hotStreak;
+      hotStreak = 0;
+      startCooldown(
+        { seconds: settings.blockSeconds, streak },
+        { isDev: isRendererDevMode(), devPort: DEV_PORT, log }
+      );
+    }
     return verdict;
   }
 );
+
+// Tense recordings in a row. Lives in memory only: a streak is about the last
+// few minutes, and one that survived a restart would be describing a mood the
+// user has long since left.
+let hotStreak = 0;
 
 ipcMain.handle('reset-nervousness-baseline', () => {
   resetRageBaseline();
@@ -1991,6 +2020,16 @@ ipcMain.handle('reset-nervousness-baseline', () => {
 });
 
 ipcMain.handle('nervousness-baseline-count', () => getRageHistoryCount());
+
+// Nobody should have to get genuinely angry three times to find out what the
+// block looks like, or how long the chosen duration actually feels.
+ipcMain.handle('preview-cooldown', () => {
+  const settings = appSettings.nervousness ?? DEFAULT_SETTINGS.nervousness;
+  return startCooldown(
+    { seconds: settings.blockSeconds, streak: settings.streakForBlock },
+    { isDev: isRendererDevMode(), devPort: DEV_PORT, log }
+  );
+});
 
 // The renderer needs the baseline to colour the microphone while recording:
 // the live reading is a distance from it, and the reading is worthless without

@@ -28,6 +28,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetNervousnessBaseline: () => ipcRenderer.invoke('reset-nervousness-baseline'),
   nervousnessBaselineCount: () => ipcRenderer.invoke('nervousness-baseline-count'),
   nervousnessBaseline: () => ipcRenderer.invoke('nervousness-baseline'),
+  previewCooldown: () => ipcRenderer.invoke('preview-cooldown'),
+  onCooldownInfo: (callback: (info: { seconds: number; streak: number; quote?: string }) => void) => {
+    const listener = (_e: unknown, info: { seconds: number; streak: number; quote?: string }) =>
+      callback(info);
+    ipcRenderer.on('cooldown-info', listener);
+    return () => ipcRenderer.removeListener('cooldown-info', listener);
+  },
   debugRecordingEnabled: () => ipcRenderer.invoke('debug-recording-enabled'),
   saveDebugRecording: (wavBase64: string, meta: unknown) =>
     ipcRenderer.invoke('save-debug-recording', wavBase64, meta),

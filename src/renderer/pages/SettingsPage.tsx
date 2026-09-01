@@ -1428,6 +1428,20 @@ export function SettingsPage() {
                 </div>
 
                 <div className="settings-field">
+                  <button
+                    type="button"
+                    className="settings-secondary-button"
+                    onClick={() => window.electronAPI.previewCooldown?.()}
+                  >
+                    Show me the block
+                  </button>
+                  <span className="settings-hint">
+                    Runs it now, for the duration set above. There is no way to dismiss
+                    it early — that is the point — so pick a length you can live with.
+                  </span>
+                </div>
+
+                <div className="settings-field">
                   <label>Your voice baseline</label>
                   <span className="settings-hint">
                     {baselineCount === null
