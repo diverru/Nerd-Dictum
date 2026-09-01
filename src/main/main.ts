@@ -1858,6 +1858,40 @@ ipcMain.handle('transcribe-local-stt', async (_event, wavBase64: string) => {
   }
 });
 
+// --- Debug recording capture -------------------------------------------------
+// Keeping the raw audio around is what makes the nervousness detector tunable
+// offline: spectral shape, pitch and level can all be re-measured from a saved
+// file, instead of asking the speaker to dictate once per experiment. Off
+// unless the marker file exists, so it never runs by accident.
+const DEBUG_RECORDINGS_DIR = path.join(os.homedir(), '.nerd-dictum', 'recordings');
+const DEBUG_RECORDINGS_FLAG = path.join(os.homedir(), '.nerd-dictum', 'keep-recordings');
+
+function debugRecordingEnabled(): boolean {
+  try {
+    return fs.existsSync(DEBUG_RECORDINGS_FLAG);
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle('debug-recording-enabled', () => debugRecordingEnabled());
+
+ipcMain.handle('save-debug-recording', (_event, wavBase64: string, meta: unknown) => {
+  if (!debugRecordingEnabled()) return false;
+  try {
+    fs.mkdirSync(DEBUG_RECORDINGS_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const base = path.join(DEBUG_RECORDINGS_DIR, stamp);
+    fs.writeFileSync(`${base}.wav`, Buffer.from(wavBase64, 'base64'));
+    fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2), 'utf-8');
+    log(`[DebugRecording] saved ${base}.wav`);
+    return true;
+  } catch (error) {
+    log('[DebugRecording] save failed:', error);
+    return false;
+  }
+});
+
 ipcMain.handle('open-wake-word-folder', () => {
   const dir = wakeWordCustomDir();
   shell.openPath(dir);

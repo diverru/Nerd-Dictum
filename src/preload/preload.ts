@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   parakeetStatus: () => ipcRenderer.invoke('parakeet-status'),
   parakeetLoadNow: () => ipcRenderer.invoke('parakeet-load-now'),
   transcribeLocalStt: (wavBase64: string) => ipcRenderer.invoke('transcribe-local-stt', wavBase64),
+  debugRecordingEnabled: () => ipcRenderer.invoke('debug-recording-enabled'),
+  saveDebugRecording: (wavBase64: string, meta: unknown) =>
+    ipcRenderer.invoke('save-debug-recording', wavBase64, meta),
   onParakeetStatusChange: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => {
     const listener = (_event: unknown, status: { state: string; error?: string; loadDurationMs?: number }) => callback(status);
     ipcRenderer.on('parakeet-status-change', listener);

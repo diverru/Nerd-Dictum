@@ -41,6 +41,10 @@ export interface ElectronAPI {
     | { ok: true; text: string; elapsedMs: number }
     | { ok: false; error: string }
   >;
+  /** True when the marker file ~/.nerd-dictum/keep-recordings exists. */
+  debugRecordingEnabled?: () => Promise<boolean>;
+  /** Writes the WAV plus a JSON sidecar to ~/.nerd-dictum/recordings. No-op when capture is off. */
+  saveDebugRecording?: (wavBase64: string, meta: unknown) => Promise<boolean>;
   onParakeetStatusChange?: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => () => void;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;

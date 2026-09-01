@@ -2,6 +2,8 @@
 
 ## 2026-09-01 (diverru fork)
 
+[2026-09-01] Debug — Optional recording capture for tuning the nervousness detector. When `~/.nerd-dictum/keep-recordings` exists, every successful transcription writes its 16 kHz WAV plus a JSON sidecar (transcript, microphone label, duration, loudness stats, per-frame level series) into `~/.nerd-dictum/recordings/`. Off without the marker file, and the save is fire-and-forget after the transcript is already in the clipboard, so it can never delay or break dictation. Keeping the audio is what makes the detector tunable offline — spectral shape, pitch and level can all be re-measured from a saved file, instead of asking the speaker to dictate once per experiment.
+
 [2026-09-01] Audio — Groundwork for the nervousness detector: every recording now reports how loud it was. `autoGainControl` is explicitly requested off (Chromium enables it by default, and it flattens exactly the shouting we want to detect); the state the browser actually granted is logged, because a mic that does gain in hardware can refuse. Per recording the speech frames (RMS above the silence threshold, so pauses don't count) are summarised into median / p95 / p25 dBFS plus the spread between the loud and quiet ends, logged to `main.log` and exposed via `AudioRecorder.getLoudnessStats()`. Absolute levels are mic-dependent and meaningless alone — the usable figures are the difference from the speaker's usual level, and the spread inside one recording, which catches a calm start turning into shouting with no history at all. Nothing acts on these numbers yet.
 
 ## 2026-05-27 (diverru fork)

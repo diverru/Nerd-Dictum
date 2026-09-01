@@ -143,6 +143,13 @@ export function App() {
   const [isDragOver, setIsDragOver] = useState(false);
   const audioLevelRef = useRef<number>(0); // For lerp smoothing
   const recorderRef = useRef<AudioRecorder | null>(null);
+  // Everything needed to write one recording to disk for offline analysis of
+  // the nervousness detector. Filled at stop(), written once the transcript is
+  // back so the saved file carries the words that went with the audio.
+  const pendingDebugSampleRef = useRef<{
+    wavBase64: string;
+    meta: Record<string, unknown>;
+  } | null>(null);
   const lastAudioRef = useRef<string | null>(null);
   // Held alongside lastAudioRef so the retry path declares the recorder's
   // real MIME (opus) instead of falling back to audio/wav.
@@ -389,6 +396,18 @@ export function App() {
       void window.electronAPI.trackEvent('transcription_success', { transcript_length: transcript.length });
       void window.electronAPI.recordTranscriptionStats(transcript, lastRecordingDurationRef.current);
 
+      // Debug capture. Fire-and-forget and last in the side-effect block: it
+      // must never delay the OK indicator, and main drops it outright unless
+      // the capture marker file is there.
+      const sample = pendingDebugSampleRef.current;
+      pendingDebugSampleRef.current = null;
+      if (sample && window.electronAPI.saveDebugRecording) {
+        void window.electronAPI.saveDebugRecording(sample.wavBase64, {
+          ...sample.meta,
+          transcript,
+        });
+      }
+
       // Clear saved audio on success
       lastAudioRef.current = null;
       lastAudioMimeTypeRef.current = undefined;
@@ -480,6 +499,18 @@ export function App() {
       // For local STT modes the recorder retained PCM — pull a 16 kHz WAV
       // out alongside the opus blob so the local pipeline has what it wants.
       const wavBase64 = recorderRef.current?.getWavBase64() ?? undefined;
+      pendingDebugSampleRef.current = wavBase64
+        ? {
+            wavBase64,
+            meta: {
+              recordedAt: new Date().toISOString(),
+              durationMs: recordingDuration,
+              device: recorderRef.current?.getDeviceLabel() ?? '',
+              loudness: recorderRef.current?.getLoudnessStats() ?? null,
+              frameSeriesDb: recorderRef.current?.getFrameSeriesDb() ?? [],
+            },
+          }
+        : null;
       // Pass the actual recorder MIME ('audio/webm;codecs=opus') so the
       // Gemini-direct path declares the real format in the request body.
       // Without this we were sending opus bytes labelled as audio/wav.

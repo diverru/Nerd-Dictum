@@ -42,12 +42,11 @@ const MIN_SPEECH_FRAMES_FOR_LOUDNESS = 60;
 const CANDIDATE_WINDOW_MS = [250, 500, 1000, 2000];
 // Fewer windows than this and the percentiles describe nothing.
 const MIN_WINDOWS_FOR_STATS = 4;
-// TEMPORARY, for picking the averaging window. Dumps every frame's level to
-// the log so window sizes can be tried offline against real recordings
-// instead of asking the speaker to dictate once per candidate. Costs ~12 KB
-// of log per recording. Delete this and its use in stop() once the window is
-// chosen.
-const DUMP_FRAME_SERIES = true;
+// Dumps every frame's level into the log. Superseded by saved recordings —
+// the frame series now travels in the JSON sidecar next to the WAV, where it
+// costs nothing and sits beside the audio it describes. Left here as a switch
+// for when there is no capture marker and the log is all there is.
+const DUMP_FRAME_SERIES = false;
 // electron-log handles long lines, but a multi-megabyte one helps nobody.
 const FRAME_SERIES_CHUNK = 400;
 
@@ -175,6 +174,7 @@ export class AudioRecorder {
   // always the rate we get.
   private frameDurationMs: number = 0;
   private loudness: LoudnessStats | null = null;
+  private deviceLabel: string = '';
 
   constructor(deps: AudioRecorderDeps = defaultDeps, options: AudioRecorderOptions = {}) {
     this.deps = deps;
@@ -261,6 +261,7 @@ export class AudioRecorder {
         });
         // Surfaced to the main log because every loudness threshold downstream
         // is meaningless while AGC is on.
+        this.deviceLabel = audioTrack.label;
         mainLog(
           `[Loudness] autoGainControl=${trackSettings.autoGainControl} (requested false) on "${audioTrack.label}"`
         );
@@ -545,6 +546,16 @@ export class AudioRecorder {
    */
   getLoudnessStats(): LoudnessStats | null {
     return this.loudness;
+  }
+
+  /** Label of the microphone the last recording came from, e.g. "Default - AirWave". */
+  getDeviceLabel(): string {
+    return this.deviceLabel;
+  }
+
+  /** Raw per-frame levels in dBFS of the last recording. Kept for offline analysis. */
+  getFrameSeriesDb(): number[] {
+    return this.speechFrameRms.map(rmsToDb);
   }
 
   /**
