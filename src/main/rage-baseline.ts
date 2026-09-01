@@ -14,6 +14,7 @@ import path from 'path';
 import fs from 'fs';
 import electronLog from 'electron-log';
 import {
+  MEASUREMENT_VERSION,
   appendSample,
   buildBaseline,
   qualifiesForBaseline,
@@ -39,8 +40,18 @@ export function loadRageBaseline(): void {
     const file = storePath();
     if (fs.existsSync(file)) {
       const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-      if (Array.isArray(parsed)) {
-        history = parsed.filter(
+      // A bare array is the version-1 store, whose samples were measured a
+      // different way and must not be mixed with the current ones.
+      const version = Array.isArray(parsed) ? 1 : Number(parsed?.version);
+      const samples = Array.isArray(parsed) ? parsed : parsed?.samples;
+      if (version !== MEASUREMENT_VERSION) {
+        log(
+          `[RageBaseline] store is version ${version}, measurement is ` +
+            `${MEASUREMENT_VERSION} — starting over`
+        );
+        history = [];
+      } else if (Array.isArray(samples)) {
+        history = samples.filter(
           (s): s is RageSample =>
             typeof s?.tiltDbPerKhz === 'number' &&
             Number.isFinite(s.tiltDbPerKhz) &&
@@ -60,7 +71,11 @@ export function loadRageBaseline(): void {
 
 function save(): void {
   try {
-    fs.writeFileSync(storePath(), JSON.stringify(history), 'utf-8');
+    fs.writeFileSync(
+      storePath(),
+      JSON.stringify({ version: MEASUREMENT_VERSION, samples: history }),
+      'utf-8'
+    );
   } catch (error) {
     log('[RageBaseline] failed to save:', error);
   }

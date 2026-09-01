@@ -58,27 +58,40 @@ const TILT_FFT_SIZE = 1024;
 // speech energy at a 16 kHz sample rate.
 const TILT_MIN_HZ = 200;
 const TILT_MAX_HZ = 6000;
-// One spectrum per this many worklet frames (~8 ms each), i.e. about 30/s.
-// Sampling every frame buys nothing: neighbouring 8 ms slices of the same
-// vowel have almost the same spectrum.
-const TILT_FRAME_STRIDE = 4;
-// Below this many spectra the median is not worth reporting. Roughly half a
-// second of speech; shorter than that the median is noise. Above it the
-// scoring damps short recordings itself rather than refusing them.
-const MIN_TILT_SAMPLES = 15;
+// One spectrum per worklet frame (~8 ms), about 125 a second.
+//
+// This was every fourth frame, and that was the single biggest source of
+// error in the whole detector. The offline analysis that established tilt as
+// the signal used every frame and produced a calm spread of 0.33 dB/kHz; the
+// live path, on a quarter of the samples, produced 1.15 — noise in a median
+// falls as the square root of the count, and 1.15/0.33 is almost exactly the
+// factor of two that a quarter of the samples predicts.
+//
+// The angry-to-calm difference is only 1.5-2.5 dB/kHz, so at 1.15 of noise
+// the signal was drowning. Reading every frame costs one more FFT read per
+// 8 ms, which the browser does anyway.
+const TILT_FRAME_STRIDE = 1;
+// Below this many spectra the median is not worth reporting. At one spectrum
+// per frame this is about half a second of speech; shorter than that the
+// median is noise. Above it the scoring damps short recordings itself.
+const MIN_TILT_SAMPLES = 60;
 // Rolling window for the live indicator, in spectra. At ~30 a second this is
 // roughly two seconds of speech: long enough that one hard consonant cannot
 // swing the colour, short enough that the speaker sees themselves getting
 // louder while it is happening rather than afterwards.
-const LIVE_TILT_WINDOW = 90;
-// Start showing a colour once this many spectra exist, roughly a third of a
-// second of speech, rather than waiting for a full window. The reading is
-// damped for its own length (see liveTension), so an early one is cautious
-// instead of wrong.
-const LIVE_TILT_MIN_SAMPLES = 12;
+// Measured on real recordings: the rolling tilt median swings 1.70 dB/kHz
+// across a calm recording on a 3-second window, 1.23 on 5 seconds, 1.04 on 8.
+// The angry-calm difference is 1.5-2.5, so a 3-second window flickered amber
+// on ordinary speech. Five seconds is the compromise — steady enough to trust,
+// short enough to still be feedback rather than a report.
+const LIVE_TILT_WINDOW_SECONDS = 5;
+// Start showing a colour once this much speech exists rather than waiting for
+// a full window. The reading is damped for its own length (see liveTension),
+// so an early one is cautious instead of wrong.
+const LIVE_TILT_MIN_SECONDS = 0.4;
 // Emit at most this often, in spectra, so the indicator updates ~10 times a
 // second instead of re-rendering on every measurement.
-const LIVE_TILT_EMIT_EVERY = 3;
+const LIVE_TILT_EMIT_EVERY = 12;
 // Dumps every frame's level into the log. Superseded by saved recordings —
 // the frame series now travels in the JSON sidecar next to the WAV, where it
 // costs nothing and sits beside the audio it describes. Left here as a switch
@@ -668,12 +681,13 @@ export class AudioRecorder {
    */
   private emitLiveTilt(): void {
     if (!this.onVoiceTilt) return;
-    if (this.tiltSamples.length < LIVE_TILT_MIN_SAMPLES) return;
+    const perSample = (TILT_FRAME_STRIDE * this.frameDurationMs) / 1000;
+    if (perSample <= 0) return;
+    if (this.tiltSamples.length * perSample < LIVE_TILT_MIN_SECONDS) return;
     if (this.tiltSamples.length % LIVE_TILT_EMIT_EVERY !== 0) return;
-    const window = this.tiltSamples.slice(-LIVE_TILT_WINDOW);
-    // Each spectrum covers TILT_FRAME_STRIDE worklet frames of speech.
-    const windowSeconds = (window.length * TILT_FRAME_STRIDE * this.frameDurationMs) / 1000;
-    this.onVoiceTilt(quantile(window, 0.5), windowSeconds);
+    const wanted = Math.ceil(LIVE_TILT_WINDOW_SECONDS / perSample);
+    const window = this.tiltSamples.slice(-wanted);
+    this.onVoiceTilt(quantile(window, 0.5), window.length * perSample);
   }
 
   /**

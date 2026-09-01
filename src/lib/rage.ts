@@ -23,6 +23,18 @@
  * caller supplies, so it can be tested exhaustively.
  */
 
+/**
+ * Bumped whenever the way tilt is measured changes.
+ *
+ * A baseline is only meaningful against measurements taken the same way.
+ * Version 1 sampled one spectrum in four and produced a calm spread of
+ * 1.15 dB/kHz; version 2 samples every frame and is about twice as precise.
+ * Mixing the two would poison the baseline with noise from a method no longer
+ * in use, so stored samples from a different version are dropped rather than
+ * migrated — there is nothing to migrate, the numbers simply mean less.
+ */
+export const MEASUREMENT_VERSION = 2;
+
 /** One recording's contribution to the baseline. */
 export interface RageSample {
   /** Median spectral tilt in dB per kHz. */

@@ -138,6 +138,11 @@ interface FlashMessage {
 // Calm green through amber to angry red. Interpolated rather than stepped so
 // the speaker can see the voice drifting, not just crossing a line — the whole
 // point is to notice it while talking and pull back.
+// How fast the colour chases the reading, per update (~10 a second). A third
+// gives a visible response within half a second while swallowing single-window
+// jitter.
+const TENSION_SMOOTHING = 0.33;
+
 const TENSION_STOPS: Array<[number, number, number]> = [
   [76, 175, 80],   // calm  — the same green the success tick uses
   [255, 152, 0],   // rising
@@ -689,9 +694,14 @@ export function App() {
         );
       });
       let tiltEmissions = 0;
+      // The reading still wanders a little between windows. Ease the colour
+      // towards it instead of snapping, so ordinary speech cannot make the
+      // microphone blink amber — a blinking indicator is one nobody believes.
+      let smoothedTension = 0;
       recorderRef.current.setOnVoiceTilt((rollingTilt, windowSeconds) => {
         const tension = liveTension(rollingTilt, rageBaselineRef.current, windowSeconds);
-        setVoiceTension(tension);
+        smoothedTension += (tension - smoothedTension) * TENSION_SMOOTHING;
+        setVoiceTension(smoothedTension);
         // First emission and then sparsely: enough to prove the path is live
         // without a line per frame.
         tiltEmissions++;
