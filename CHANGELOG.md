@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-09-01 (diverru fork)
+
+[2026-09-01] Audio — Groundwork for the nervousness detector: every recording now reports how loud it was. `autoGainControl` is explicitly requested off (Chromium enables it by default, and it flattens exactly the shouting we want to detect); the state the browser actually granted is logged, because a mic that does gain in hardware can refuse. Per recording the speech frames (RMS above the silence threshold, so pauses don't count) are summarised into median / p95 / p25 dBFS plus the spread between the loud and quiet ends, logged to `main.log` and exposed via `AudioRecorder.getLoudnessStats()`. Absolute levels are mic-dependent and meaningless alone — the usable figures are the difference from the speaker's usual level, and the spread inside one recording, which catches a calm start turning into shouting with no history at all. Nothing acts on these numbers yet.
+
 ## 2026-05-27 (diverru fork)
 
 [2026-05-27] Providers — Added OpenRouter as a sixth polish-step LLM provider, joining Google/OpenAI/Anthropic/Groq/DeepSeek. OpenRouter is OpenAI-API-compatible, so it slots into the existing pluggable-provider machinery via `createOpenAI` with `baseURL: https://openrouter.ai/api/v1`. Model listing uses the same `/models` endpoint and surfaces OpenRouter's human-friendly `name` ("Anthropic: Claude 3.5 Sonnet") instead of just the slug id. Requests carry `HTTP-Referer`/`X-Title` headers for app attribution.

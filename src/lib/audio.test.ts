@@ -11,6 +11,11 @@ import {
   SILENCE_THRESHOLD,
   DEFAULT_SILENCE_DURATION_MS,
   SILENCE_STATE_LOG_DEBOUNCE_MS,
+  DB_FLOOR,
+  MIN_SPEECH_FRAMES_FOR_LOUDNESS,
+  rmsToDb,
+  quantile,
+  computeLoudnessStats,
 } from './audio';
 
 // Mock audio data generators
@@ -804,6 +809,86 @@ describe('AudioRecorder', () => {
       mockContext._simulateAudioData(buffer);
 
       expect(audioLevelCallback).toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Loudness measurement', () => {
+  describe('rmsToDb', () => {
+    it('maps full scale to 0 dB', () => {
+      expect(rmsToDb(1)).toBeCloseTo(0, 6);
+    });
+
+    it('halving the amplitude costs about 6 dB', () => {
+      expect(rmsToDb(0.5) - rmsToDb(1)).toBeCloseTo(-6.02, 1);
+      expect(rmsToDb(0.25) - rmsToDb(0.5)).toBeCloseTo(-6.02, 1);
+    });
+
+    it('clamps silence to the floor instead of returning -Infinity', () => {
+      expect(rmsToDb(0)).toBe(DB_FLOOR);
+      expect(rmsToDb(-1)).toBe(DB_FLOOR);
+      expect(Number.isFinite(rmsToDb(0))).toBe(true);
+    });
+  });
+
+  describe('quantile', () => {
+    it('returns the median for an odd-length set', () => {
+      expect(quantile([3, 1, 2], 0.5)).toBe(2);
+    });
+
+    it('interpolates between neighbours', () => {
+      expect(quantile([0, 10], 0.5)).toBe(5);
+    });
+
+    it('returns the ends at 0 and 1 regardless of input order', () => {
+      const values = [5, 1, 9, 3];
+      expect(quantile(values, 0)).toBe(1);
+      expect(quantile(values, 1)).toBe(9);
+    });
+
+    it('does not mutate the caller array', () => {
+      const values = [3, 1, 2];
+      quantile(values, 0.5);
+      expect(values).toEqual([3, 1, 2]);
+    });
+
+    it('returns NaN for an empty set', () => {
+      expect(Number.isNaN(quantile([], 0.5))).toBe(true);
+    });
+  });
+
+  describe('computeLoudnessStats', () => {
+    const frames = (value: number, count: number) => new Array(count).fill(value);
+
+    it('returns null when there is too little speech to measure', () => {
+      expect(computeLoudnessStats([])).toBeNull();
+      expect(computeLoudnessStats(frames(0.1, MIN_SPEECH_FRAMES_FOR_LOUDNESS - 1))).toBeNull();
+    });
+
+    it('reports a flat recording with almost no spread', () => {
+      const stats = computeLoudnessStats(frames(0.1, MIN_SPEECH_FRAMES_FOR_LOUDNESS));
+      expect(stats).not.toBeNull();
+      expect(stats!.medianDb).toBeCloseTo(-20, 1);
+      expect(stats!.spreadDb).toBeCloseTo(0, 6);
+      expect(stats!.frameCount).toBe(MIN_SPEECH_FRAMES_FOR_LOUDNESS);
+    });
+
+    it('shows the spread when a calm start turns into shouting', () => {
+      // Half the recording at 0.05, half at 0.2 — four times the amplitude,
+      // which is about 12 dB.
+      const calmThenLoud = [...frames(0.05, 100), ...frames(0.2, 100)];
+      const stats = computeLoudnessStats(calmThenLoud);
+      expect(stats).not.toBeNull();
+      expect(stats!.spreadDb).toBeCloseTo(12.04, 1);
+      expect(stats!.peakDb).toBeGreaterThan(stats!.quietDb);
+    });
+
+    it('lets a single loud frame move the peak but not the median', () => {
+      const oneCough = [...frames(0.1, 200), 0.9];
+      const stats = computeLoudnessStats(oneCough)!;
+      const flat = computeLoudnessStats(frames(0.1, 200))!;
+      expect(stats.medianDb).toBeCloseTo(flat.medianDb, 1);
+      expect(stats.peakDb).toBeCloseTo(flat.peakDb, 1);
     });
   });
 });

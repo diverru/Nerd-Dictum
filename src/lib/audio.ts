@@ -26,6 +26,15 @@ const MAX_RECORDING_MS = 15 * 60 * 1000; // 15 minutes
 const SILENCE_THRESHOLD = 0.01; // RMS threshold below which audio is considered silence
 const DEFAULT_SILENCE_DURATION_MS = 2500; // Stop recording after 2.5s of silence
 
+// Loudness measurement constants
+// Digital silence has no decibel value (log of zero). Anything at or below
+// this is treated as "as quiet as we bother to measure".
+const DB_FLOOR = -100;
+// The worklet posts one frame per render quantum (128 samples), so at 16 kHz
+// this is roughly half a second of actual speech. Below that the percentiles
+// are noise and we report nothing rather than a number that looks real.
+const MIN_SPEECH_FRAMES_FOR_LOUDNESS = 60;
+
 // Debug logging interval
 let lastRmsLogTime = 0;
 const RMS_LOG_INTERVAL_MS = 500; // Log RMS every 500ms
@@ -80,6 +89,27 @@ export interface AudioRecorderOptions {
   retainPcmForWav?: boolean;
 }
 
+/**
+ * How loud one recording was, in dBFS (0 dB = full scale, everything is
+ * negative). Only frames above SILENCE_THRESHOLD are counted, so pauses
+ * between sentences don't drag the numbers down.
+ *
+ * Absolute values here are mic-dependent and mean little on their own. The
+ * useful figures are differences: this recording's `medianDb` against the
+ * speaker's usual level, and `spreadDb` inside a single recording.
+ */
+export interface LoudnessStats {
+  /** Typical speech level of the recording. Median, so a cough can't move it. */
+  medianDb: number;
+  /** Loud end: the level exceeded 5% of the time. */
+  peakDb: number;
+  /** Quiet end: the level exceeded 75% of the time. */
+  quietDb: number;
+  /** peakDb − quietDb. Rises when a calm start turns into shouting. */
+  spreadDb: number;
+  frameCount: number;
+}
+
 export class AudioRecorder {
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
@@ -102,6 +132,10 @@ export class AudioRecorder {
   private options: AudioRecorderOptions;
   private lastSilenceLogTime: number = Number.NEGATIVE_INFINITY;
   private lastSoundLogTime: number = Number.NEGATIVE_INFINITY;
+  // RMS of every frame loud enough to be speech. Silent frames are excluded so
+  // pauses between sentences don't drag the recording's loudness down.
+  private speechFrameRms: number[] = [];
+  private loudness: LoudnessStats | null = null;
 
   constructor(deps: AudioRecorderDeps = defaultDeps, options: AudioRecorderOptions = {}) {
     this.deps = deps;
@@ -154,6 +188,12 @@ export class AudioRecorder {
         sampleRate: TARGET_SAMPLE_RATE,
         echoCancellation: true,
         noiseSuppression: true,
+        // Chromium turns auto gain control ON by default, which is precisely
+        // what erases the signal the loudness detector reads: shouting gets
+        // quietly turned down within a second or so. Ask for it off. The
+        // browser may still refuse (some USB mics do gain in hardware), so
+        // the actual state is logged from getSettings() below.
+        autoGainControl: false,
       };
 
       // Add device ID if specified
@@ -178,7 +218,13 @@ export class AudioRecorder {
           channelCount: trackSettings.channelCount,
           echoCancellation: trackSettings.echoCancellation,
           noiseSuppression: trackSettings.noiseSuppression,
+          autoGainControl: trackSettings.autoGainControl,
         });
+        // Surfaced to the main log because every loudness threshold downstream
+        // is meaningless while AGC is on.
+        mainLog(
+          `[Loudness] autoGainControl=${trackSettings.autoGainControl} (requested false) on "${audioTrack.label}"`
+        );
       }
 
       // Create audio context
@@ -210,6 +256,8 @@ export class AudioRecorder {
       this.recorderChunks = [];
       this.pcmChunks = [];
       this.wavBase64 = null;
+      this.speechFrameRms = [];
+      this.loudness = null;
       this.mediaRecorder = new MediaRecorder(this.mediaStream, {
         mimeType: this.recordedMimeType,
         audioBitsPerSecond: RECORDER_BITRATE,
@@ -247,6 +295,12 @@ export class AudioRecorder {
         const rms = this.calculateRMS(inputData);
         const now = Date.now();
         const recordingDuration = now - this.recordingStartTime;
+
+        // Loudness measurement runs regardless of the silence-detection
+        // setting — it feeds the "are you shouting" check, not auto-stop.
+        if (rms >= SILENCE_THRESHOLD) {
+          this.speechFrameRms.push(rms);
+        }
 
         // Call audio level callback (normalized RMS, clamped to 0-1)
         // Multiply by ~3 to make typical speech levels more visible (raw RMS is often 0.01-0.1)
@@ -337,6 +391,18 @@ export class AudioRecorder {
     const recordingDuration = Date.now() - this.recordingStartTime;
     this.isRecording = false;
 
+    // Measure loudness before any early return below, so a rejected recording
+    // still leaves numbers behind to look at.
+    this.loudness = computeLoudnessStats(this.speechFrameRms);
+    if (this.loudness) {
+      const l = this.loudness;
+      mainLog(
+        `[Loudness] median=${l.medianDb.toFixed(1)}dB peak=${l.peakDb.toFixed(1)}dB ` +
+          `quiet=${l.quietDb.toFixed(1)}dB spread=${l.spreadDb.toFixed(1)}dB ` +
+          `frames=${l.frameCount} duration=${recordingDuration}ms`
+      );
+    }
+
     // Validate recording duration
     if (recordingDuration < MIN_RECORDING_MS) {
       this.cleanup();
@@ -410,6 +476,14 @@ export class AudioRecorder {
    */
   getWavBase64(): string | null {
     return this.wavBase64;
+  }
+
+  /**
+   * Loudness of the most recent recording, or null if it held no speech.
+   * Available after `stop()`.
+   */
+  getLoudnessStats(): LoudnessStats | null {
+    return this.loudness;
   }
 
   /**
@@ -488,6 +562,8 @@ export class AudioRecorder {
 
     this.recorderChunks = [];
     this.pcmChunks = [];
+    // `loudness` deliberately survives cleanup — callers read it after stop().
+    this.speechFrameRms = [];
     this.silenceStartTime = null;
     this.silenceStopFired = false;
   }
@@ -502,6 +578,49 @@ function mainLog(message: string): void {
   } else {
     console.log(message);
   }
+}
+
+/**
+ * Amplitude to decibels. Silence would be -Infinity, so it is clamped to
+ * DB_FLOOR — a number the callers can still do arithmetic on.
+ */
+export function rmsToDb(rms: number): number {
+  if (!(rms > 0)) return DB_FLOOR;
+  return Math.max(DB_FLOOR, 20 * Math.log10(rms));
+}
+
+/**
+ * Value below which `fraction` of the sorted samples fall (0 = smallest,
+ * 1 = largest). Interpolates between neighbours.
+ */
+export function quantile(values: number[], fraction: number): number {
+  if (values.length === 0) return NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  if (sorted.length === 1) return sorted[0];
+  const position = Math.min(Math.max(fraction, 0), 1) * (sorted.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+/**
+ * Summarise a recording's speech frames. Returns null when there were too few
+ * to say anything — a recording of pure silence has no loudness.
+ */
+export function computeLoudnessStats(speechFrameRms: number[]): LoudnessStats | null {
+  if (speechFrameRms.length < MIN_SPEECH_FRAMES_FOR_LOUDNESS) return null;
+  const db = speechFrameRms.map(rmsToDb);
+  const medianDb = quantile(db, 0.5);
+  const peakDb = quantile(db, 0.95);
+  const quietDb = quantile(db, 0.25);
+  return {
+    medianDb,
+    peakDb,
+    quietDb,
+    spreadDb: peakDb - quietDb,
+    frameCount: db.length,
+  };
 }
 
 function buildWavBase64FromPcm(
@@ -584,4 +703,4 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 // Export utility functions for testing
-export { TARGET_SAMPLE_RATE, CHANNELS, BITS_PER_SAMPLE, MIN_RECORDING_MS, MAX_RECORDING_MS, SILENCE_THRESHOLD, DEFAULT_SILENCE_DURATION_MS, SILENCE_STATE_LOG_DEBOUNCE_MS };
+export { TARGET_SAMPLE_RATE, CHANNELS, BITS_PER_SAMPLE, MIN_RECORDING_MS, MAX_RECORDING_MS, SILENCE_THRESHOLD, DEFAULT_SILENCE_DURATION_MS, SILENCE_STATE_LOG_DEBOUNCE_MS, DB_FLOOR, MIN_SPEECH_FRAMES_FOR_LOUDNESS };
