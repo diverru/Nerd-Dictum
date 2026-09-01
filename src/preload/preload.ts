@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('stop-recording', listener);
     };
   },
+  onCancelRecording: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('cancel-recording', listener);
+    return () => {
+      ipcRenderer.removeListener('cancel-recording', listener);
+    };
+  },
   onHoldKeyDown: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on('hold-key-down', listener);

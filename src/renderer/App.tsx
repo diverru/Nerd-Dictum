@@ -156,6 +156,14 @@ export function App() {
   // While true, the hold-to-record key is still pressed — silence-detection
   // must not auto-stop recording.
   const isHoldKeyDownRef = useRef(false);
+  // startRecording spends hundreds of ms in permission checks and
+  // getUserMedia before the recorder actually runs. A hold-key release that
+  // lands inside that window would otherwise be dropped (nothing is
+  // recording yet) and the recording would stick on forever. These two refs
+  // let the stop/cancel handlers park the release and have startRecording
+  // discard the session as soon as the recorder is up.
+  const startInFlightRef = useRef(false);
+  const pendingHoldReleaseRef = useRef(false);
   // True when the in-flight transcription was started by the wake-word
   // detector. We use this to send Enter after auto-paste so the hands-free
   // flow fully submits without keyboard interaction.
@@ -503,9 +511,23 @@ export function App() {
     setState('idle');
   }, [state]);
 
+  // Discard an active recording without transcribing anything. Used when the
+  // hold-to-record key turns out to be an accidental quick tap.
+  const cancelRecording = useCallback(() => {
+    if (!recorderRef.current?.getIsRecording()) return;
+    recorderRef.current.cancel();
+    recorderRef.current = null;
+    console.log('[Recording] Cancelled — quick tap, nothing transcribed');
+    window.electronAPI.resumeMedia();
+    setState('idle');
+  }, []);
+
   // Start recording (extracted for hold-to-record)
   const startRecording = useCallback(async () => {
     if (state !== 'idle' && state !== 'success') return;
+
+    startInFlightRef.current = true;
+    pendingHoldReleaseRef.current = false;
 
     // Clear any pending retry audio when starting new recording
     lastAudioRef.current = null;
@@ -516,8 +538,12 @@ export function App() {
       successTimeoutRef.current = null;
     }
 
-    // Pause any playing media
-    window.electronAPI.pauseMedia();
+    // Pause any playing media. Hold-to-record sessions skip this: the main
+    // process ducks the volume itself, delayed so quick accidental taps
+    // never touch the user's music.
+    if (!isHoldKeyDownRef.current) {
+      window.electronAPI.pauseMedia();
+    }
 
     try {
       // Check and request microphone permission on macOS
@@ -573,6 +599,14 @@ export function App() {
       });
       await recorderRef.current.start();
       console.log('[Recording] Started');
+      if (pendingHoldReleaseRef.current) {
+        pendingHoldReleaseRef.current = false;
+        recorderRef.current.cancel();
+        recorderRef.current = null;
+        console.log('[Recording] Hold key released during startup — discarding');
+        window.electronAPI.resumeMedia();
+        return;
+      }
       recordingStartTimeRef.current = Date.now();
       // Audible confirmation that recording is actually live. Played from
       // Web Audio in the renderer, so it lands on the AudioContext clock
@@ -587,6 +621,8 @@ export function App() {
     } catch (error) {
       showError(error);
       window.electronAPI.resumeMedia();
+    } finally {
+      startInFlightRef.current = false;
     }
   }, [state, showError, showMessage, stopRecordingAndTranscribe]);
 
@@ -671,12 +707,31 @@ export function App() {
     const unsubscribe = window.electronAPI.onStopRecording(() => {
       if (recorderRef.current?.getIsRecording()) {
         stopRecordingAndTranscribe();
+      } else if (startInFlightRef.current) {
+        // Release arrived while the recorder was still spinning up: no audio
+        // was captured, so there is nothing to transcribe — discard.
+        pendingHoldReleaseRef.current = true;
       }
     });
     return () => {
       unsubscribe();
     };
   }, [stopRecordingAndTranscribe]);
+
+  // Quick accidental tap of the hold-to-record key (e.g. Alt during
+  // Alt-Tab): abort the recording entirely, never transcribe or paste.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onCancelRecording?.(() => {
+      if (recorderRef.current?.getIsRecording()) {
+        cancelRecording();
+      } else if (startInFlightRef.current) {
+        pendingHoldReleaseRef.current = true;
+      }
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [cancelRecording]);
 
   // Wake-word detection: main process emits wake-word-triggered just before
   // start-recording, so we set the ref first and the start handler picks it up.

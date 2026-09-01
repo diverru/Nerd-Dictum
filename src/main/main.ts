@@ -1,7 +1,8 @@
 import { app, BrowserWindow, ipcMain, clipboard, globalShortcut, Tray, Menu, nativeImage, screen, systemPreferences, shell, dialog, session } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { exec } from 'child_process';
+import os from 'os';
+import { exec, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { autoUpdater } from 'electron-updater';
 import electronLog from 'electron-log';
@@ -104,116 +105,283 @@ const loggedFetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
 loggedFetch.preconnect = __origFetch.preconnect?.bind(__origFetch) ?? (() => {});
 globalThis.fetch = loggedFetch;
 
-// Track original volume level before recording
-let savedVolume: number | null = null;
+// ── System-audio ducking during recording (macOS) ─────────────────────────
+//
+// Every volume/mute change runs through a single serialized queue
+// (`volumeOpChain`). This is the whole reason the "music never comes back"
+// bug existed: osascript is slow (~100–600ms per spawn) and recordings can be
+// sub-second taps, so a fire-and-forget `resume` could execute BEFORE its
+// paired `duck` osascript had finished. The resume would find nothing saved,
+// no-op, and then the late duck would land — leaving the system stuck at the
+// low volume forever. Chaining guarantees a resume always observes the
+// completed duck's state, and a duck queued during a resume runs after it.
+
 const RECORDING_VOLUME = 10; // Lower volume to 10% during recording
 
-// Lower system volume during recording (macOS)
-// Tracks which action the most recent pause took, so resume reverts the
-// matching thing even if the user changed the mode mid-recording.
+// The real (pre-duck) output volume we must restore to. Non-null ONLY while we
+// currently hold a duck. Written exactly once per duck cycle and cleared on
+// restore, so a redundant second duck can never overwrite the true baseline
+// with an already-lowered value.
+let savedVolume: number | null = null;
+
+// Tracks which action the active pause took, so resume reverts the matching
+// thing even if the user switched modes mid-recording.
 type MediaPauseAction = 'duck' | 'mute' | null;
 let pauseActionTaken: MediaPauseAction = null;
+
+// Persist the active pause to disk. If the app is force-quit or crashes while
+// it has the system ducked or muted, the in-memory state is lost — and a fresh
+// launch has no idea it must undo anything, stranding the user's music low or
+// muted. (That is exactly why "restarting the app didn't help".) This file lets
+// the next launch detect and undo a pause left behind by an unclean shutdown.
+const PAUSE_STATE_FILE = path.join(os.homedir(), '.nerd-dictum', 'pause-state.json');
+
+// Mirrors the in-memory pause state to disk. Called after every change to
+// pauseActionTaken / savedVolume; a null action removes the file.
+function persistPauseState(): void {
+  try {
+    if (pauseActionTaken === null) {
+      fs.rmSync(PAUSE_STATE_FILE, { force: true });
+      return;
+    }
+    fs.mkdirSync(path.dirname(PAUSE_STATE_FILE), { recursive: true });
+    fs.writeFileSync(
+      PAUSE_STATE_FILE,
+      JSON.stringify({ action: pauseActionTaken, savedVolume }),
+      'utf-8',
+    );
+  } catch {
+    // best-effort: crash-recovery bookkeeping must never break dictation
+  }
+}
+
+// Serialize every osascript volume op. New ops append to the chain and run
+// strictly after all prior ops settle (success OR failure — we never want one
+// failed op to wedge the queue).
+let volumeOpChain: Promise<void> = Promise.resolve();
+function enqueueVolumeOp(op: () => Promise<void>): void {
+  volumeOpChain = volumeOpChain.then(op, op).catch(() => {});
+}
+
+function runOsascript(script: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(`osascript -e '${script.replace(/\n/g, "' -e '")}'`, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout.trim());
+    });
+  });
+}
 
 function pauseMediaPlayback(): void {
   if (process.platform !== 'darwin') return;
   const mode = appSettings.mediaPauseMode ?? 'duck';
   if (mode === 'none') return;
-  if (mode === 'mute') {
-    pauseViaMute();
-  } else {
-    pauseViaDuck();
-  }
+  enqueueVolumeOp(mode === 'mute' ? pauseViaMute : pauseViaDuck);
 }
 
-function pauseViaDuck(): void {
+async function pauseViaDuck(): Promise<void> {
+  // Idempotent: if we already hold a duck, leave the saved baseline untouched.
+  // Guards the redundant duck fired by the renderer's startRecording on top of
+  // the main-process duck fired from the key handler.
+  if (savedVolume !== null) return;
   const t0 = Date.now();
-  // Single chained osascript that reads the current volume AND lowers it
-  // in one shot. Splitting this into two `exec` calls cost ~600ms because
-  // each osascript spawn pays its own startup tax; the chained form is
-  // ~half that (one process, one System Events handshake).
+  // Single chained osascript that reads the current volume AND lowers it in one
+  // shot. Splitting this into two `exec` calls cost ~600ms because each
+  // osascript spawn pays its own startup tax; the chained form is ~half that.
   const script =
     `set savedVol to output volume of (get volume settings)\n` +
     `if savedVol > ${RECORDING_VOLUME} then set volume output volume ${RECORDING_VOLUME}\n` +
     `return savedVol`;
-  exec(`osascript -e '${script.replace(/\n/g, "' -e '")}'`, (error, stdout) => {
-    if (error) {
-      log('[Media] Error ducking volume:', error.message);
-      return;
-    }
-    const currentVolume = parseInt(stdout.trim(), 10);
+  try {
+    const currentVolume = parseInt(await runOsascript(script), 10);
     if (isNaN(currentVolume)) {
-      log('[Media] Could not parse volume:', stdout);
+      log('[Media] Could not parse volume');
       return;
     }
     if (currentVolume > RECORDING_VOLUME) {
       savedVolume = currentVolume;
       pauseActionTaken = 'duck';
+      persistPauseState();
       log(`[Media] Volume lowered from ${currentVolume} to ${RECORDING_VOLUME} in ${Date.now() - t0}ms`);
     } else {
       log(`[Media] Volume already low (${currentVolume}) in ${Date.now() - t0}ms`);
     }
-  });
+  } catch (error) {
+    log('[Media] Error ducking volume:', (error as Error).message);
+  }
 }
 
-function pauseViaMute(): void {
+async function pauseViaMute(): Promise<void> {
+  // Idempotent: if we already muted, don't re-read/re-mute.
+  if (pauseActionTaken === 'mute') return;
   const t0 = Date.now();
-  // Read prior mute state, then mute if not already. We only restore on
-  // resume if WE set the mute — otherwise the user's pre-existing mute
-  // state survives the recording.
+  // Read prior mute state, then mute if not already. We only restore on resume
+  // if WE set the mute — otherwise the user's pre-existing mute survives.
   const script =
     `set wasMuted to output muted of (get volume settings)\n` +
     `if not wasMuted then set volume output muted true\n` +
     `return wasMuted`;
-  exec(`osascript -e '${script.replace(/\n/g, "' -e '")}'`, (error, stdout) => {
-    if (error) {
-      log('[Media] Error muting:', error.message);
-      return;
-    }
-    const wasMuted = stdout.trim() === 'true';
+  try {
+    const wasMuted = (await runOsascript(script)) === 'true';
     if (!wasMuted) {
       pauseActionTaken = 'mute';
+      persistPauseState();
       log(`[Media] Muted in ${Date.now() - t0}ms`);
     } else {
       log(`[Media] Already muted in ${Date.now() - t0}ms`);
     }
-  });
+  } catch (error) {
+    log('[Media] Error muting:', (error as Error).message);
+  }
 }
 
 // Restore system audio after recording (macOS).
 function resumeMediaPlayback(): void {
   if (process.platform !== 'darwin') return;
-  const action = pauseActionTaken;
-  pauseActionTaken = null;
-  if (action === 'duck') {
-    resumeFromDuck();
-  } else if (action === 'mute') {
-    resumeFromMute();
-  }
-  // action === null: nothing to restore (mode was 'none', or pause skipped
-  // because the system was already in the desired state).
+  enqueueVolumeOp(resumeMedia);
 }
 
-function resumeFromDuck(): void {
+async function resumeMedia(): Promise<void> {
+  const action = pauseActionTaken;
+  const restoreVolume = savedVolume; // capture before resumeFromDuck() nulls it
+  pauseActionTaken = null;
+  if (action === 'duck') {
+    await resumeFromDuck();
+  } else if (action === 'mute') {
+    await resumeFromMute();
+  }
+  // action === null: nothing to restore (mode was 'none', or the pause skipped
+  // because the system was already in the desired state).
+  persistPauseState(); // pauseActionTaken is null now → clears the state file
+  if (action) scheduleResumeReassert(action, restoreVolume);
+}
+
+// Bluetooth headsets (AirPods, Bose QC-series, …) switch the A2DP (stereo)
+// output to the HFP (mono) profile the moment an app opens their microphone,
+// and switch back a couple seconds after it closes. Each profile is a distinct
+// audio endpoint with its OWN mute flag / volume. So the mute we set at
+// key-DOWN can land on the A2DP endpoint while the unmute at key-UP lands on
+// the HFP one — and when A2DP comes back it is still stranded muted/low, which
+// is the "sound never comes back" the user hears. The immediate resume can't
+// win that race, so we re-assert it a few times as the profile settles. Guarded
+// by pauseActionTaken so a re-assert never fights a recording that has since
+// started.
+const RESUME_REASSERT_DELAYS_MS = [1500, 4000, 8000];
+
+function scheduleResumeReassert(action: MediaPauseAction, volume: number | null): void {
+  if (process.platform !== 'darwin' || action === null) return;
+  for (const delay of RESUME_REASSERT_DELAYS_MS) {
+    setTimeout(() => {
+      if (pauseActionTaken !== null) return; // a new recording owns the state now
+      enqueueVolumeOp(async () => {
+        if (pauseActionTaken !== null) return; // re-check once it's our turn
+        try {
+          if (action === 'mute') {
+            const stillMuted = (await runOsascript(`return output muted of (get volume settings)`)) === 'true';
+            if (stillMuted) {
+              await runOsascript(`set volume output muted false`);
+              log('[Media] Re-asserted unmute after Bluetooth profile settle');
+            }
+          } else if (action === 'duck' && volume !== null) {
+            const current = parseInt(await runOsascript(`return output volume of (get volume settings)`), 10);
+            if (!isNaN(current) && current < volume) {
+              await runOsascript(`set volume output volume ${volume}`);
+              log(`[Media] Re-asserted volume ${volume} after Bluetooth profile settle (was ${current})`);
+            }
+          }
+        } catch (error) {
+          log('[Media] Re-assert error:', (error as Error).message);
+        }
+      });
+    }, delay);
+  }
+}
+
+async function resumeFromDuck(): Promise<void> {
   if (savedVolume === null) return;
   const volumeToRestore = savedVolume;
   savedVolume = null;
-  exec(`osascript -e 'set volume output volume ${volumeToRestore}'`, (error) => {
-    if (error) {
-      log('[Media] Error restoring volume:', error.message);
-      return;
-    }
+  try {
+    await runOsascript(`set volume output volume ${volumeToRestore}`);
     log('[Media] Volume restored to', volumeToRestore);
+  } catch (error) {
+    log('[Media] Error restoring volume:', (error as Error).message);
+  }
+}
+
+async function resumeFromMute(): Promise<void> {
+  try {
+    await runOsascript(`set volume output muted false`);
+    log('[Media] Unmuted');
+  } catch (error) {
+    log('[Media] Error unmuting:', (error as Error).message);
+  }
+}
+
+// Undo a duck/mute left behind by an unclean shutdown (see PAUSE_STATE_FILE).
+// Runs once at startup. Only acts if the system STILL looks ducked/muted, so we
+// never clobber a state the user has since deliberately changed.
+function recoverPauseStateOnStartup(): void {
+  if (process.platform !== 'darwin') return;
+  let saved: { action?: string; savedVolume?: number | null };
+  try {
+    saved = JSON.parse(fs.readFileSync(PAUSE_STATE_FILE, 'utf-8'));
+  } catch {
+    return; // no file / unreadable → clean shutdown, nothing to recover
+  }
+  const cleanup = () => {
+    try {
+      fs.rmSync(PAUSE_STATE_FILE, { force: true });
+    } catch {
+      // best-effort
+    }
+  };
+  enqueueVolumeOp(async () => {
+    try {
+      if (saved.action === 'duck' && typeof saved.savedVolume === 'number') {
+        const current = parseInt(await runOsascript(`return output volume of (get volume settings)`), 10);
+        if (!isNaN(current) && current <= RECORDING_VOLUME && saved.savedVolume > current) {
+          await runOsascript(`set volume output volume ${saved.savedVolume}`);
+          log(`[Media] Recovered volume to ${saved.savedVolume} after unclean shutdown (was ${current})`);
+        } else {
+          log(`[Media] Skipping duck recovery — volume no longer looks ducked (current ${current})`);
+        }
+      } else if (saved.action === 'mute') {
+        const stillMuted = (await runOsascript(`return output muted of (get volume settings)`)) === 'true';
+        if (stillMuted) {
+          await runOsascript(`set volume output muted false`);
+          log('[Media] Recovered from mute after unclean shutdown');
+        } else {
+          log('[Media] Skipping mute recovery — system no longer muted');
+        }
+      }
+    } catch (error) {
+      log('[Media] Error recovering pause state:', (error as Error).message);
+    } finally {
+      cleanup();
+    }
   });
 }
 
-function resumeFromMute(): void {
-  exec(`osascript -e 'set volume output muted false'`, (error) => {
-    if (error) {
-      log('[Media] Error unmuting:', error.message);
-      return;
+// Synchronous best-effort restore on quit. osascript is async, but a graceful
+// quit won't wait for the serialized queue to drain, so if we still hold a
+// pause we undo it synchronously before exiting.
+function restorePauseOnQuit(): void {
+  if (process.platform !== 'darwin' || pauseActionTaken === null) return;
+  try {
+    if (pauseActionTaken === 'duck' && savedVolume !== null) {
+      execSync(`osascript -e 'set volume output volume ${savedVolume}'`);
+      log('[Media] Volume restored on quit to', savedVolume);
+    } else if (pauseActionTaken === 'mute') {
+      execSync(`osascript -e 'set volume output muted false'`);
+      log('[Media] Unmuted on quit');
     }
-    log('[Media] Unmuted');
-  });
+  } catch {
+    // best-effort
+  }
+  pauseActionTaken = null;
+  savedVolume = null;
+  persistPauseState();
 }
 
 const DEFAULT_HOTKEY = 'CommandOrControl+Shift+R';
@@ -1003,19 +1171,39 @@ function registerGlobalShortcuts() {
   setupHoldToRecord();
 }
 
+// Recording starts the instant the hold key goes down, but the system-volume
+// duck is delayed by this much: an accidental tap (Alt during Alt-Tab and the
+// like) releases the key before the timer fires, so the user's music is never
+// touched. Holding past the delay ducks the volume as usual.
+const HOLD_DUCK_DELAY_MS = 1000;
+// If the key is released this soon after going down, the press was accidental
+// and the recording is too short to matter — cancel it, transcribe nothing.
+const HOLD_QUICK_TAP_MS = 300;
+
+let holdDuckTimer: NodeJS.Timeout | null = null;
+let holdKeyDownAt = 0;
+
 function setupHoldToRecord() {
+  // Restarting the hook (settings change) must not leave a stale duck timer
+  // from a key press under the previous configuration.
+  if (holdDuckTimer) {
+    clearTimeout(holdDuckTimer);
+    holdDuckTimer = null;
+  }
   if (appSettings.holdToRecordEnabled) {
     const started = startKeyboardHook(appSettings.holdToRecordKey, {
       onKeyDown: () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           log('[HoldToRecord] Key down, starting recording');
-          // Duck the system volume IMMEDIATELY here, not via the renderer's
-          // start-recording flow. By the time the renderer receives the IPC,
-          // calls getUserMedia, and bounces a `pause-media` IPC back, ~600ms+
-          // has elapsed — long enough that the user's music keeps blasting
-          // into the start of the recording. Doing it inline saves the
-          // round-trip and the React/audio-worklet wakeup tax.
-          pauseMediaPlayback();
+          holdKeyDownAt = Date.now();
+          // Duck the system volume only after the key has been held for a
+          // while — quick accidental taps must leave the music alone. The
+          // renderer's startRecording skips its own pauseMedia for
+          // hold-to-record sessions so nothing ducks before this fires.
+          holdDuckTimer = setTimeout(() => {
+            holdDuckTimer = null;
+            pauseMediaPlayback();
+          }, HOLD_DUCK_DELAY_MS);
           // hold-key-down is observed by the renderer to suppress
           // silence-detection auto-stop while the key is physically held.
           mainWindow.webContents.send('hold-key-down');
@@ -1023,10 +1211,20 @@ function setupHoldToRecord() {
         }
       },
       onKeyUp: () => {
+        if (holdDuckTimer) {
+          clearTimeout(holdDuckTimer);
+          holdDuckTimer = null;
+        }
         if (mainWindow && !mainWindow.isDestroyed()) {
-          log('[HoldToRecord] Key up, stopping recording');
           mainWindow.webContents.send('hold-key-up');
-          mainWindow.webContents.send('stop-recording');
+          const heldMs = Date.now() - holdKeyDownAt;
+          if (heldMs < HOLD_QUICK_TAP_MS) {
+            log(`[HoldToRecord] Quick tap (${heldMs}ms), cancelling recording`);
+            mainWindow.webContents.send('cancel-recording');
+          } else {
+            log('[HoldToRecord] Key up, stopping recording');
+            mainWindow.webContents.send('stop-recording');
+          }
         }
       },
     });
@@ -1377,6 +1575,10 @@ app.whenReady().then(() => {
   // Load settings on app start
   appSettings = loadSettings();
 
+  // Undo a duck/mute left behind by a previous unclean shutdown, so a restart
+  // actually brings the music back instead of stranding it low or muted.
+  recoverPauseStateOnStartup();
+
   // Load transcript history for context feature
   loadTranscriptHistory();
 
@@ -1445,6 +1647,7 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  restorePauseOnQuit();
   globalShortcut.unregisterAll();
   stopKeyboardHook();
   void stopWakeWord();
@@ -1987,9 +2190,25 @@ ipcMain.handle('hide-for-duration', (_event, durationMs: number) => {
   return true;
 });
 
+// Expose recording state to external tools (e.g. the Turing status screen) via a flag file.
+function writeDictationFlag(recording: boolean): void {
+  try {
+    const dir = path.join(os.homedir(), '.nerd-dictum');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'recording'), recording ? '1' : '0', 'utf-8');
+  } catch {
+    // best-effort: exporting status must never break dictation
+  }
+}
+
 // Analytics event tracking from renderer
 ipcMain.handle('track-event', (_event, name: string, params: Record<string, string | number> = {}) => {
   trackEvent(name, params);
+  if (name === 'recording_start') {
+    writeDictationFlag(true);
+  } else if (name === 'recording_stop') {
+    writeDictationFlag(false);
+  }
 });
 
 // Media control for pausing/resuming during recording

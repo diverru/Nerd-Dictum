@@ -98,6 +98,11 @@ export function setupElectronAPIMock() {
       return () => {};
     },
 
+    onCancelRecording: (_callback: () => void): (() => void) => {
+      // No-op for browser mock - hold-to-record is Electron-only
+      return () => {};
+    },
+
     getSettings: async (): Promise<AppSettings> => {
       return { ...mockSettings };
     },

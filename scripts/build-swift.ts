@@ -38,7 +38,14 @@ if (swiftCheck.status !== 0) {
 
 console.log('[build:swift] swift build -c release …');
 const t0 = Date.now();
-const build = spawnSync('swift', ['build', '-c', 'release'], {
+// FluidAudio only compiles for arm64 (Float16 does not exist on x86_64).
+// A Rosetta shell (e.g. an x86_64 tmux/terminal on Apple Silicon) makes
+// `swift build` target x86_64 and fail — force the native arch there.
+const translated = spawnSync('sysctl', ['-n', 'sysctl.proc_translated']).stdout?.toString().trim() === '1';
+const [cmd, args] = translated
+  ? ['arch', ['-arm64', 'swift', 'build', '-c', 'release']]
+  : ['swift', ['build', '-c', 'release']];
+const build = spawnSync(cmd, args as string[], {
   cwd: swiftDir,
   stdio: 'inherit',
 });

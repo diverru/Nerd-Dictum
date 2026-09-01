@@ -47,6 +47,7 @@ export interface ElectronAPI {
   onToggleRecording: (callback: () => void) => () => void;
   onStartRecording: (callback: () => void) => () => void;
   onStopRecording: (callback: () => void) => () => void;
+  onCancelRecording?: (callback: () => void) => () => void;
   onHoldKeyDown?: (callback: () => void) => () => void;
   onHoldKeyUp?: (callback: () => void) => () => void;
   onWakeWordTriggered?: (callback: () => void) => () => void;
