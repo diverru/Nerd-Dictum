@@ -10,28 +10,19 @@ export interface ErrorDetail {
 }
 
 export interface ElectronAPI {
-  copyToClipboard: (text: string, autoPaste?: boolean, pressEnterAfter?: boolean) => Promise<boolean>;
+  copyToClipboard: (text: string, autoPaste?: boolean) => Promise<boolean>;
   log?: (message: string) => void;
-  listWakeWordModels?: () => Promise<Array<{ name: string; label: string; isBuiltin: boolean }>>;
-  openWakeWordFolder?: () => Promise<string>;
   listGeminiModels?: () => Promise<
     | { ok: true; models: Array<{ id: string; displayName: string; description: string }> }
     | { ok: false; error: string; models: [] }
   >;
   listProviderModels?: (
-    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter',
+    provider: 'google' | 'openai',
     apiKey: string,
   ) => Promise<
     | { ok: true; models: Array<{ id: string; displayName: string }> }
     | { ok: false; error: string; models: [] }
   >;
-  polishText?: (
-    provider: 'google' | 'openai' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter',
-    apiKey: string,
-    model: string,
-    rawTranscript: string,
-    options?: { languages?: string[]; customKeywords?: string; previousTranscripts?: string[] },
-  ) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
   parakeetStatus?: () => Promise<{ state: 'idle' | 'starting' | 'ready' | 'failed'; error?: string; loadDurationMs?: number }>;
   parakeetLoadNow?: () => Promise<
     | { ok: true; status: { state: string; error?: string; loadDurationMs?: number } }
@@ -41,32 +32,6 @@ export interface ElectronAPI {
     | { ok: true; text: string; elapsedMs: number }
     | { ok: false; error: string }
   >;
-  /** Scores one recording against the speaker's own baseline, then folds it in. */
-  scoreNervousness?: (
-    tiltDbPerKhz: number | null,
-    recordingSeconds: number,
-    speechSeconds: number
-  ) => Promise<{
-    score: number;
-    hot: boolean;
-    reason?: 'no-tilt' | 'too-short' | 'baseline-too-small';
-    baseline: { centre: number; spread: number; count: number } | null;
-  }>;
-  /** Forgets the baseline — for a new microphone, or one gone wrong. */
-  resetNervousnessBaseline?: () => Promise<boolean>;
-  nervousnessBaselineCount?: () => Promise<number>;
-  /** The speaker's current voice baseline, for colouring the mic while recording. */
-  nervousnessBaseline?: () => Promise<{ centre: number; spread: number; count: number }>;
-  /** Shows the block right now, at the configured duration. */
-  previewCooldown?: () => Promise<boolean>;
-  /** Details of the block being shown, delivered once the window is up. */
-  onCooldownInfo?: (
-    callback: (info: { seconds: number; streak: number; quote?: string }) => void
-  ) => () => void;
-  /** True when the marker file ~/.nerd-dictum/keep-recordings exists. */
-  debugRecordingEnabled?: () => Promise<boolean>;
-  /** Writes the WAV plus a JSON sidecar to ~/.nerd-dictum/recordings. No-op when capture is off. */
-  saveDebugRecording?: (wavBase64: string, meta: unknown) => Promise<boolean>;
   onParakeetStatusChange?: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => () => void;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;
@@ -76,7 +41,6 @@ export interface ElectronAPI {
   onCancelRecording?: (callback: () => void) => () => void;
   onHoldKeyDown?: (callback: () => void) => () => void;
   onHoldKeyUp?: (callback: () => void) => () => void;
-  onWakeWordTriggered?: (callback: () => void) => () => void;
   getSettings: () => Promise<AppSettings>;
   saveSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
   openSettingsWindow: () => Promise<boolean>;

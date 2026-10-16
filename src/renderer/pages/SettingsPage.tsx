@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import type { AppSettings, NervousnessSettings, HoldToRecordKey, LLMProviderId, ProviderConfig } from '../../shared/types';
+import type { AppSettings, HoldToRecordKey, CloudProvider } from '../../shared/types';
+import { DEFAULT_OPENAI_MODEL } from '../../lib/openai-stt';
 
 // Hold-to-record key options
 const HOLD_TO_RECORD_KEYS: Array<{ value: HoldToRecordKey; label: string }> = [
@@ -112,13 +113,12 @@ const MAX_CUSTOM_HINT_LENGTH = 500;
 const MAX_CUSTOM_KEYWORDS_LENGTH = 1000;
 
 // Tab definitions
-type SettingsTab = 'general' | 'languages' | 'appearance' | 'calm' | 'advanced';
+type SettingsTab = 'general' | 'languages' | 'appearance' | 'advanced';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'languages', label: 'Languages' },
   { id: 'appearance', label: 'Appearance' },
-  { id: 'calm', label: 'Calm' },
   { id: 'advanced', label: 'Advanced' },
 ];
 
@@ -137,13 +137,6 @@ export function SettingsPage() {
   const [customKeywords, setCustomKeywords] = useState('');
   const [microphoneDeviceId, setMicrophoneDeviceId] = useState('');
   const [mediaPauseMode, setMediaPauseMode] = useState<'duck' | 'mute' | 'none'>('duck');
-  const [nervousness, setNervousness] = useState<NervousnessSettings>({
-    enabled: true,
-    threshold: 1.6,
-    streakForBlock: 3,
-    blockSeconds: 30,
-  });
-  const [baselineCount, setBaselineCount] = useState<number | null>(null);
   const [silenceDetectionEnabled, setSilenceDetectionEnabled] = useState(true);
   const [silenceDurationMs, setSilenceDurationMs] = useState(2500);
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
@@ -155,18 +148,13 @@ export function SettingsPage() {
   const [holdToRecordEnabled, setHoldToRecordEnabled] = useState(true);
   const [holdToRecordKey, setHoldToRecordKey] = useState<HoldToRecordKey>('LeftAlt');
   const [autoPasteEnabled, setAutoPasteEnabled] = useState(false);
-  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
-  const [wakeWordKeyword, setWakeWordKeyword] = useState<string>('hey_jarvis');
-  const [wakeWordThreshold, setWakeWordThreshold] = useState(0.5);
-  const [wakeWordPressEnter, setWakeWordPressEnter] = useState(true);
-  const [transcriptionMode, setTranscriptionMode] = useState<'gemini' | 'local-then-gemini' | 'local-only'>('gemini');
-  const [polishProvider, setPolishProvider] = useState<LLMProviderId>('google');
-  const [providerConfigs, setProviderConfigs] = useState<Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>>({});
-  const [providerModelLists, setProviderModelLists] = useState<Partial<Record<LLMProviderId, Array<{ id: string; displayName: string }>>>>({});
-  const [providerModelsError, setProviderModelsError] = useState<Partial<Record<LLMProviderId, string>>>({});
-  const [isLoadingProviderModels, setIsLoadingProviderModels] = useState<Partial<Record<LLMProviderId, boolean>>>({});
+  const [transcriptionMode, setTranscriptionMode] = useState<'cloud' | 'local'>('cloud');
+  const [cloudProvider, setCloudProvider] = useState<CloudProvider>('google');
+  const [providerConfigs, setProviderConfigs] = useState<AppSettings['providerConfigs']>({});
+  const [providerModelLists, setProviderModelLists] = useState<Partial<Record<CloudProvider, Array<{ id: string; displayName: string }>>>>({});
+  const [providerModelsError, setProviderModelsError] = useState<Partial<Record<CloudProvider, string>>>({});
+  const [isLoadingProviderModels, setIsLoadingProviderModels] = useState<Partial<Record<CloudProvider, boolean>>>({});
   const [parakeetStatus, setParakeetStatus] = useState<{ state: string; error?: string; loadDurationMs?: number }>({ state: 'idle' });
-  const [wakeWordModels, setWakeWordModels] = useState<Array<{ name: string; label: string; isBuiltin: boolean }>>([]);
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [languageSearch, setLanguageSearch] = useState('');
@@ -199,15 +187,10 @@ export function SettingsPage() {
     holdToRecordEnabled: boolean;
     holdToRecordKey: HoldToRecordKey;
     autoPasteEnabled: boolean;
-    wakeWordEnabled: boolean;
-    wakeWordKeyword: string;
-    wakeWordThreshold: number;
-    wakeWordPressEnter: boolean;
-    transcriptionMode: 'gemini' | 'local-then-gemini' | 'local-only';
-    polishProvider: LLMProviderId;
-    providerConfigs: Partial<Record<Exclude<LLMProviderId, 'google'>, ProviderConfig>>;
+    transcriptionMode: 'cloud' | 'local';
+    cloudProvider: CloudProvider;
+    providerConfigs: AppSettings['providerConfigs'];
     mediaPauseMode: 'duck' | 'mute' | 'none';
-    nervousness: NervousnessSettings;
   } | null>(null);
 
   const themeOptions: Array<{ value: ThemeMode; label: string; previewTheme: 'dark' | 'light' }> = [
@@ -239,15 +222,10 @@ export function SettingsPage() {
       holdToRecordEnabled !== initial.holdToRecordEnabled ||
       holdToRecordKey !== initial.holdToRecordKey ||
       autoPasteEnabled !== initial.autoPasteEnabled ||
-      wakeWordEnabled !== initial.wakeWordEnabled ||
-      wakeWordKeyword !== initial.wakeWordKeyword ||
-      wakeWordThreshold !== initial.wakeWordThreshold ||
-      wakeWordPressEnter !== initial.wakeWordPressEnter ||
       transcriptionMode !== initial.transcriptionMode ||
-      polishProvider !== initial.polishProvider ||
+      cloudProvider !== initial.cloudProvider ||
       JSON.stringify(providerConfigs) !== JSON.stringify(initial.providerConfigs) ||
-      mediaPauseMode !== initial.mediaPauseMode ||
-      JSON.stringify(nervousness) !== JSON.stringify(initial.nervousness)
+      mediaPauseMode !== initial.mediaPauseMode
     );
   }, [
     apiKey,
@@ -268,32 +246,13 @@ export function SettingsPage() {
     holdToRecordEnabled,
     holdToRecordKey,
     autoPasteEnabled,
-    wakeWordEnabled,
-    wakeWordKeyword,
-    wakeWordThreshold,
-    wakeWordPressEnter,
     transcriptionMode,
-    polishProvider,
+    cloudProvider,
     providerConfigs,
     mediaPauseMode,
-    nervousness,
   ]);
 
   // Load audio devices
-  const loadWakeWordModels = useCallback(async () => {
-    if (!window.electronAPI.listWakeWordModels) return;
-    try {
-      const models = await window.electronAPI.listWakeWordModels();
-      setWakeWordModels(models);
-    } catch (error) {
-      console.error('[Settings] Failed to list wake-word models:', error);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadWakeWordModels();
-  }, [loadWakeWordModels]);
-
   // Best-effort: try to populate the Gemini model list once at mount. Will
   // silently fail if API key isn't set yet — user can hit "Refresh" later.
   useEffect(() => {
@@ -373,22 +332,10 @@ export function SettingsPage() {
         const loadedHoldToRecordEnabled = settings.holdToRecordEnabled ?? true;
         const loadedHoldToRecordKey = (settings.holdToRecordKey as HoldToRecordKey) || 'LeftAlt';
         const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? false;
-        const loadedWakeWordEnabled = settings.wakeWordEnabled ?? false;
-        const loadedWakeWordKeyword = settings.wakeWordKeyword || 'hey_jarvis';
-        const loadedWakeWordThreshold = settings.wakeWordThreshold ?? 0.5;
-        const loadedWakeWordPressEnter = settings.wakeWordPressEnter ?? true;
-        const loadedTranscriptionMode = (settings.transcriptionMode as 'gemini' | 'local-then-gemini' | 'local-only') || 'gemini';
-        const loadedPolishProvider = (settings.polishProvider as LLMProviderId) || 'google';
+        const loadedTranscriptionMode = settings.transcriptionMode || 'cloud';
+        const loadedCloudProvider = settings.cloudProvider || 'google';
         const loadedProviderConfigs = settings.providerConfigs || {};
         const loadedMediaPauseMode = (settings.mediaPauseMode as 'duck' | 'mute' | 'none') || 'duck';
-        const loadedNervousness: NervousnessSettings = {
-          enabled: settings.nervousness?.enabled ?? true,
-          threshold: settings.nervousness?.threshold ?? 1.6,
-          streakForBlock: settings.nervousness?.streakForBlock ?? 3,
-          blockSeconds: settings.nervousness?.blockSeconds ?? 30,
-        };
-        setNervousness(loadedNervousness);
-        void window.electronAPI.nervousnessBaselineCount?.().then(setBaselineCount);
 
         setApiKey(loadedApiKey);
         setModel(loadedModel);
@@ -408,12 +355,8 @@ export function SettingsPage() {
         setHoldToRecordEnabled(loadedHoldToRecordEnabled);
         setHoldToRecordKey(loadedHoldToRecordKey);
         setAutoPasteEnabled(loadedAutoPasteEnabled);
-        setWakeWordEnabled(loadedWakeWordEnabled);
-        setWakeWordKeyword(loadedWakeWordKeyword);
-        setWakeWordThreshold(loadedWakeWordThreshold);
-        setWakeWordPressEnter(loadedWakeWordPressEnter);
         setTranscriptionMode(loadedTranscriptionMode);
-        setPolishProvider(loadedPolishProvider);
+        setCloudProvider(loadedCloudProvider);
         setProviderConfigs(loadedProviderConfigs);
         setMediaPauseMode(loadedMediaPauseMode);
 
@@ -437,15 +380,10 @@ export function SettingsPage() {
           holdToRecordEnabled: loadedHoldToRecordEnabled,
           holdToRecordKey: loadedHoldToRecordKey,
           autoPasteEnabled: loadedAutoPasteEnabled,
-          wakeWordEnabled: loadedWakeWordEnabled,
-          wakeWordKeyword: loadedWakeWordKeyword,
-          wakeWordThreshold: loadedWakeWordThreshold,
-          wakeWordPressEnter: loadedWakeWordPressEnter,
           transcriptionMode: loadedTranscriptionMode,
-          polishProvider: loadedPolishProvider,
+          cloudProvider: loadedCloudProvider,
           providerConfigs: loadedProviderConfigs,
           mediaPauseMode: loadedMediaPauseMode,
-          nervousness: loadedNervousness,
         };
       } catch (error) {
         console.error('[Settings] Failed to load:', error);
@@ -537,15 +475,10 @@ export function SettingsPage() {
         holdToRecordEnabled,
         holdToRecordKey,
         autoPasteEnabled,
-        wakeWordEnabled,
-        wakeWordKeyword,
-        wakeWordThreshold,
-        wakeWordPressEnter,
         transcriptionMode,
-        polishProvider,
+        cloudProvider,
         providerConfigs,
         mediaPauseMode,
-        nervousness,
       });
       if (success) {
         // Update initial settings so hasUnsavedChanges becomes false
@@ -568,15 +501,10 @@ export function SettingsPage() {
           holdToRecordEnabled,
           holdToRecordKey,
           autoPasteEnabled,
-          wakeWordEnabled,
-          wakeWordKeyword,
-          wakeWordThreshold,
-          wakeWordPressEnter,
           transcriptionMode,
-          polishProvider,
+          cloudProvider,
           providerConfigs,
           mediaPauseMode,
-          nervousness,
         };
         setSaveMessage('Saved!');
         setTimeout(() => {
@@ -763,17 +691,16 @@ export function SettingsPage() {
               <select
                 id="transcriptionMode"
                 value={transcriptionMode}
-                onChange={(e) => setTranscriptionMode(e.target.value as 'gemini' | 'local-then-gemini' | 'local-only')}
+                onChange={(e) => setTranscriptionMode(e.target.value as 'cloud' | 'local')}
                 className="settings-select"
               >
-                <option value="gemini">Gemini (audio → cloud)</option>
-                <option value="local-then-gemini">Local Parakeet + LLM polish</option>
-                <option value="local-only">Local Parakeet only (offline)</option>
+                <option value="cloud">Cloud (audio → provider)</option>
+                <option value="local">Local Parakeet (offline)</option>
               </select>
               <span className="settings-hint">
-                Local modes use the bundled Parakeet TDT v3 (Swift + CoreML, ANE-accelerated). First load takes ~10s; the model stays warm afterwards. macOS only.
+                Local mode uses the bundled Parakeet TDT v3 (Swift + CoreML, ANE-accelerated). First load takes ~10s; the model stays warm afterwards. macOS only.
               </span>
-              {(transcriptionMode === 'local-then-gemini' || transcriptionMode === 'local-only') && (
+              {transcriptionMode === 'local' && (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ fontSize: 12, opacity: 0.85 }}>
                     Parakeet status: <strong>{parakeetStatus.state}</strong>
@@ -799,34 +726,27 @@ export function SettingsPage() {
               )}
             </div>
 
-            {transcriptionMode === 'local-then-gemini' && (
+            {transcriptionMode === 'cloud' && (
               <div className="settings-field">
-                <label htmlFor="polishProvider">LLM provider</label>
+                <label htmlFor="cloudProvider">Cloud provider</label>
                 <select
-                  id="polishProvider"
-                  value={polishProvider}
-                  onChange={(e) => setPolishProvider(e.target.value as LLMProviderId)}
+                  id="cloudProvider"
+                  value={cloudProvider}
+                  onChange={(e) => setCloudProvider(e.target.value as CloudProvider)}
                   className="settings-select"
                 >
                   <option value="google">Google (Gemini)</option>
                   <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic (Claude)</option>
-                  <option value="groq">Groq</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="openrouter">OpenRouter</option>
                 </select>
                 <span className="settings-hint">
-                  Which cloud model polishes the raw Parakeet transcript. Each provider keeps its own API key and model, persisted across switches.
+                  Which cloud model transcribes the audio. Each provider keeps its own API key and model, persisted across switches.
                 </span>
               </div>
             )}
 
-            {transcriptionMode !== 'local-only' && (() => {
-              // Active provider drives the credentials block. In `gemini`
-              // mode it is forced to Google (audio→cloud requires Gemini);
-              // in `local-then-gemini` it follows the polish dropdown.
-              const activeProvider: LLMProviderId =
-                transcriptionMode === 'gemini' ? 'google' : polishProvider;
+            {transcriptionMode === 'cloud' && (() => {
+              // The provider dropdown drives the credentials block.
+              const activeProvider = cloudProvider;
               const isGoogle = activeProvider === 'google';
               const activeKey = isGoogle
                 ? apiKey
@@ -875,14 +795,7 @@ export function SettingsPage() {
                   setIsLoadingProviderModels((prev) => ({ ...prev, [activeProvider]: false }));
                 }
               };
-              const providerLabel = ({
-                google: 'Google (Gemini)',
-                openai: 'OpenAI',
-                anthropic: 'Anthropic',
-                groq: 'Groq',
-                deepseek: 'DeepSeek',
-                openrouter: 'OpenRouter',
-              } as Record<LLMProviderId, string>)[activeProvider];
+              const providerLabel = isGoogle ? 'Google (Gemini)' : 'OpenAI';
               return (
                 <>
                   <div className="settings-field">
@@ -922,7 +835,7 @@ export function SettingsPage() {
                         type="text"
                         value={activeModel}
                         onChange={(e) => updateActiveModel(e.target.value)}
-                        placeholder="Model id"
+                        placeholder={isGoogle ? 'Model id' : DEFAULT_OPENAI_MODEL}
                       />
                     )}
                     <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -1076,94 +989,6 @@ export function SettingsPage() {
                 After transcription, simulate ⌘V / Ctrl+V into the active window. Requires Accessibility permission on macOS — you'll be prompted when enabling.
               </span>
             </div>
-
-            <div className="settings-field">
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={wakeWordEnabled}
-                  onChange={(e) => setWakeWordEnabled(e.target.checked)}
-                />
-                <span>Wake word (always-listening)</span>
-              </label>
-              <span className="settings-hint">
-                Continuously listen for a keyword and start recording on detection. Uses openWakeWord ONNX models.
-              </span>
-            </div>
-
-            {wakeWordEnabled && (
-              <>
-                <div className="settings-field">
-                  <label>Keyword</label>
-                  <select
-                    value={wakeWordKeyword}
-                    onChange={(e) => setWakeWordKeyword(e.target.value)}
-                    className="settings-select"
-                  >
-                    {wakeWordModels.length === 0 && (
-                      <option value={wakeWordKeyword}>{wakeWordKeyword}</option>
-                    )}
-                    {wakeWordModels.map((m) => (
-                      <option key={m.name} value={m.name}>
-                        {m.label}{m.isBuiltin ? '' : ' (custom)'}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="settings-hint">
-                    Drop additional .onnx models into the Models folder to extend this list.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <label>Detection threshold: {wakeWordThreshold.toFixed(2)}</label>
-                  <input
-                    type="range"
-                    min="0.1"
-                    max="0.95"
-                    step="0.05"
-                    value={wakeWordThreshold}
-                    onChange={(e) => setWakeWordThreshold(parseFloat(e.target.value))}
-                    className="settings-range"
-                  />
-                  <span className="settings-hint">
-                    Higher = fewer false positives but more missed wakes. 0.5 is a sane default.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={wakeWordPressEnter}
-                      onChange={(e) => setWakeWordPressEnter(e.target.checked)}
-                    />
-                    <span>Press Enter after auto-paste</span>
-                  </label>
-                  <span className="settings-hint">
-                    After the wake-word triggered transcript is pasted, also press Enter so the chat / form / prompt is submitted hands-free. Only applies to wake-word recordings, not manual hold-to-record.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      className="settings-btn settings-btn-secondary"
-                      onClick={() => window.electronAPI.openWakeWordFolder?.()}
-                      type="button"
-                    >
-                      Open Models Folder
-                    </button>
-                    <button
-                      className="settings-btn settings-btn-secondary"
-                      onClick={() => void loadWakeWordModels()}
-                      type="button"
-                    >
-                      Reload List
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
 
             <div className="settings-field">
               <button
@@ -1341,132 +1166,6 @@ export function SettingsPage() {
               </div>
               <span className="settings-hint">System follows your OS appearance.</span>
             </div>
-          </>
-        )}
-
-        {/* Calm Tab — voice-tension detection */}
-        {activeTab === 'calm' && (
-          <>
-            <div className="settings-field">
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={nervousness.enabled}
-                  onChange={(e) =>
-                    setNervousness({ ...nervousness, enabled: e.target.checked })
-                  }
-                />
-                <span>Watch my tone of voice</span>
-              </label>
-              <span className="settings-hint">
-                Tints the microphone from green to red while you dictate, based on how
-                harsh your voice sounds compared with your own normal.
-              </span>
-            </div>
-
-            {nervousness.enabled && (
-              <>
-                <div className="settings-field">
-                  <label>Sensitivity: {nervousness.threshold.toFixed(1)}</label>
-                  <input
-                    type="range"
-                    min="0.8"
-                    max="3"
-                    step="0.1"
-                    value={nervousness.threshold}
-                    onChange={(e) =>
-                      setNervousness({ ...nervousness, threshold: parseFloat(e.target.value) })
-                    }
-                    className="settings-range"
-                  />
-                  <div className="settings-range-labels">
-                    <span>Reacts early</span>
-                    <span>Only real anger</span>
-                  </div>
-                  <span className="settings-hint">
-                    How far from your usual voice counts as tense. Lower turns the
-                    microphone red sooner. There is no right value — set it by ear.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <label>Block after {nervousness.streakForBlock} tense recordings in a row</label>
-                  <input
-                    type="range"
-                    min="2"
-                    max="8"
-                    step="1"
-                    value={nervousness.streakForBlock}
-                    onChange={(e) =>
-                      setNervousness({ ...nervousness, streakForBlock: Number(e.target.value) })
-                    }
-                    className="settings-range"
-                  />
-                  <span className="settings-hint">
-                    One sharp recording happens. Several in a row is a pattern. A calm
-                    recording resets the count.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <label>Block for {nervousness.blockSeconds} seconds</label>
-                  <input
-                    type="range"
-                    min="10"
-                    max="180"
-                    step="5"
-                    value={nervousness.blockSeconds}
-                    onChange={(e) =>
-                      setNervousness({ ...nervousness, blockSeconds: Number(e.target.value) })
-                    }
-                    className="settings-range"
-                  />
-                  <span className="settings-hint">
-                    A full-screen pause you cannot skip. Long enough to break the
-                    momentum, short enough not to cost you the thread.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <button
-                    type="button"
-                    className="settings-secondary-button"
-                    onClick={() => window.electronAPI.previewCooldown?.()}
-                  >
-                    Show me the block
-                  </button>
-                  <span className="settings-hint">
-                    Runs it now, for the duration set above. There is no way to dismiss
-                    it early — that is the point — so pick a length you can live with.
-                  </span>
-                </div>
-
-                <div className="settings-field">
-                  <label>Your voice baseline</label>
-                  <span className="settings-hint">
-                    {baselineCount === null
-                      ? 'Checking…'
-                      : baselineCount === 0
-                        ? 'Not built yet. Dictate a few messages over 10 seconds and it appears on its own.'
-                        : `Built from your last ${baselineCount} recording${baselineCount === 1 ? '' : 's'}. It follows you as you go — nothing to set.`}
-                  </span>
-                  <button
-                    type="button"
-                    className="settings-secondary-button"
-                    onClick={async () => {
-                      await window.electronAPI.resetNervousnessBaseline?.();
-                      setBaselineCount(0);
-                    }}
-                  >
-                    Start the baseline over
-                  </button>
-                  <span className="settings-hint">
-                    Use after switching microphone, or if the colours stop matching how
-                    you actually feel.
-                  </span>
-                </div>
-              </>
-            )}
           </>
         )}
 

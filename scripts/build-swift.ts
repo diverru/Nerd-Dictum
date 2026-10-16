@@ -7,7 +7,7 @@
  *   electron-builder via extraResources, and which parakeet-service.ts
  *   spawns at runtime for ANE-accelerated inference.
  * - Other platforms / no Swift toolchain: skipped silently. Local STT mode
- *   simply isn't available; hold-to-record / wake-word / Gemini-only
+ *   simply isn't available; hold-to-record and cloud
  *   transcription continue to work.
  */
 

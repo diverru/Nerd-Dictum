@@ -2,42 +2,15 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AppSettings } from '../shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  copyToClipboard: (text: string, autoPaste = false, pressEnterAfter = false) =>
-    ipcRenderer.invoke('copy-to-clipboard', text, autoPaste, pressEnterAfter),
+  copyToClipboard: (text: string, autoPaste = false) =>
+    ipcRenderer.invoke('copy-to-clipboard', text, autoPaste),
   log: (message: string) => ipcRenderer.send('renderer-log', message),
-  listWakeWordModels: () => ipcRenderer.invoke('list-wake-word-models'),
-  openWakeWordFolder: () => ipcRenderer.invoke('open-wake-word-folder'),
   listGeminiModels: () => ipcRenderer.invoke('list-gemini-models'),
   listProviderModels: (provider: string, apiKey: string) =>
     ipcRenderer.invoke('list-provider-models', provider, apiKey),
-  polishText: (
-    provider: string,
-    apiKey: string,
-    model: string,
-    rawTranscript: string,
-    options?: { languages?: string[]; customKeywords?: string; previousTranscripts?: string[] },
-  ) => ipcRenderer.invoke('polish-text', provider, apiKey, model, rawTranscript, options),
   parakeetStatus: () => ipcRenderer.invoke('parakeet-status'),
   parakeetLoadNow: () => ipcRenderer.invoke('parakeet-load-now'),
   transcribeLocalStt: (wavBase64: string) => ipcRenderer.invoke('transcribe-local-stt', wavBase64),
-  scoreNervousness: (
-    tiltDbPerKhz: number | null,
-    recordingSeconds: number,
-    speechSeconds: number
-  ) => ipcRenderer.invoke('score-nervousness', tiltDbPerKhz, recordingSeconds, speechSeconds),
-  resetNervousnessBaseline: () => ipcRenderer.invoke('reset-nervousness-baseline'),
-  nervousnessBaselineCount: () => ipcRenderer.invoke('nervousness-baseline-count'),
-  nervousnessBaseline: () => ipcRenderer.invoke('nervousness-baseline'),
-  previewCooldown: () => ipcRenderer.invoke('preview-cooldown'),
-  onCooldownInfo: (callback: (info: { seconds: number; streak: number; quote?: string }) => void) => {
-    const listener = (_e: unknown, info: { seconds: number; streak: number; quote?: string }) =>
-      callback(info);
-    ipcRenderer.on('cooldown-info', listener);
-    return () => ipcRenderer.removeListener('cooldown-info', listener);
-  },
-  debugRecordingEnabled: () => ipcRenderer.invoke('debug-recording-enabled'),
-  saveDebugRecording: (wavBase64: string, meta: unknown) =>
-    ipcRenderer.invoke('save-debug-recording', wavBase64, meta),
   onParakeetStatusChange: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => {
     const listener = (_event: unknown, status: { state: string; error?: string; loadDurationMs?: number }) => callback(status);
     ipcRenderer.on('parakeet-status-change', listener);
@@ -87,13 +60,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('hold-key-up', listener);
     return () => {
       ipcRenderer.removeListener('hold-key-up', listener);
-    };
-  },
-  onWakeWordTriggered: (callback: () => void) => {
-    const listener = () => callback();
-    ipcRenderer.on('wake-word-triggered', listener);
-    return () => {
-      ipcRenderer.removeListener('wake-word-triggered', listener);
     };
   },
   getSettings: () => ipcRenderer.invoke('get-settings'),

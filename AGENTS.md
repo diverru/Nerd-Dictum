@@ -150,28 +150,23 @@ Gemini-direct dictation:
 - **Auto-paste** the transcript via `osascript` `key code 9 using command
   down`. Cursor / VS Code accept this form (they ignore `keystroke "v"`).
   Gated by Accessibility permission and the `autoPasteEnabled` setting.
-- **Wake-word** (`src/main/wake-word.ts`) via `onnxruntime-node` +
-  `@picovoice/pvrecorder-node`, using openWakeWord ONNX models bundled in
-  `assets/wake-word/`. Custom keywords drop into `<userData>/wake-words/`.
 - **Anti-hallucination**: silence-handling rule sandwiched at top and
   bottom of the prompt; min 1 s recording duration; the renderer drops
   results that exactly echo a recent transcript or a single keyword from
   the correction dictionary. Gemini `generationConfig` is pinned to
   greedy/deterministic decoding.
-- **Hands-free Enter**: a wake-word-triggered transcription, when pasted,
-  chains V + Enter in a single AppleScript with a 250 ms delay between
-  them so V always lands first. Toggle: `wakeWordPressEnter`.
 
 ## Local STT (Parakeet TDT v3)
 
-- **Mode** picker in Settings → Advanced (`transcriptionMode`):
-  - `gemini` (default): audio → Gemini direct, as upstream.
-  - `local-then-gemini`: Parakeet recognises locally, Gemini polishes the
-    text. The polish prompt forbids invention and keeps original-language
-    technical terms in their original script (no `package` → `пакет`, no
-    Cyrillic transliterations like `пекедж`).
-  - `local-only`: fully offline, no API key, no LLM round-trip. The raw
-    Parakeet transcript is returned verbatim.
+- **Mode** picker in Settings (`transcriptionMode`):
+  - `cloud`: audio → the provider in `cloudProvider`, the transcript is
+    pasted as is. `google` uses `apiKey` / `model` (Gemini). `openai` uses
+    `providerConfigs.openai` (default model `gpt-transcribe`, 16 kHz WAV
+    upload, `src/lib/openai-stt.ts`); its `prompt` field carries a
+    vocabulary hint of Latin-script terms from recent transcripts plus
+    `customKeywords`.
+  - `local`: Parakeet only, fully offline, no API key. Parakeet is loaded
+    only in this mode.
 - **Backend**: macOS-only Swift CLI (`swift/Sources/parakeet-bridge/main.swift`)
   built with `swift build -c release`. Uses the `FluidAudio` package which
   loads CoreML models compiled for the Apple Neural Engine — ~100× real-time

@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import './styles/App.css';
 import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS } from '../lib/audio';
 import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
+import { transcribeWithOpenAI, DEFAULT_OPENAI_MODEL, OPENAI_MAX_UPLOAD_BYTES } from '../lib/openai-stt';
 import { classifyError, ClassifiedError } from '../lib/errors';
 import { playStartSound, playSuccessSound, playErrorSound } from '../lib/sounds';
 import { SettingsButton } from './components/Settings';
@@ -9,12 +10,6 @@ import { InfoButton } from './components/InfoButton';
 import { HideButton } from './components/HideButton';
 import { StatsButton } from './components/StatsButton';
 import { AudioLevelRing } from './components/AudioLevelRing';
-import {
-  liveTension,
-  isBaselineUsable,
-  DEFAULT_THRESHOLD,
-  type RageBaseline,
-} from '../lib/rage';
 import type { AppSettings } from './types/electron';
 
 const MESSAGE_TIMEOUT_MS = 2000;
@@ -28,8 +23,8 @@ const MIN_TRANSCRIBE_DURATION_MS = 1000;
 // when Gemini hallucinated one of them as the whole transcript for silent audio.
 const DEFAULT_KEYWORD_TERMS = ['CLAUDE.md', 'Cloud MD', 'WIX', 'vix'];
 
-// Generic English filler phrases that an offline STT (Parakeet) or the LLM
-// polish step produces when the audio was effectively silent. We treat
+// Generic English filler phrases that an offline STT (Parakeet) or a cloud
+// model produces when the audio was effectively silent. We treat
 // these as no-speech, with or without trailing punctuation.
 const SILENCE_HALLUCINATION_PHRASES = [
   'thank you',
@@ -115,11 +110,11 @@ function buildRecorderOptions(settings: AppSettings): AudioRecorderOptions {
     deviceId: settings.microphoneDeviceId || undefined,
     silenceDetectionEnabled: settings.silenceDetectionEnabled ?? true,
     silenceDurationMs: settings.silenceDurationMs || DEFAULT_SILENCE_DURATION_MS,
-    // Local-Parakeet pipelines need a 16 kHz mono WAV. Keep PCM around so
+    // Parakeet and OpenAI take a 16 kHz mono WAV. Keep PCM around so
     // recorder.getWavBase64() can produce one after stop().
     retainPcmForWav:
-      settings.transcriptionMode === 'local-then-gemini' ||
-      settings.transcriptionMode === 'local-only',
+      settings.transcriptionMode === 'local' ||
+      (settings.transcriptionMode === 'cloud' && settings.cloudProvider === 'openai'),
   };
 }
 
@@ -140,76 +135,15 @@ interface FlashMessage {
   hasErrorDetail: boolean;
 }
 
-// Calm green through amber to angry red. Interpolated rather than stepped so
-// the speaker can see the voice drifting, not just crossing a line — the whole
-// point is to notice it while talking and pull back.
-// How fast the colour chases the reading, per update (~10 a second). A third
-// gives a visible response within half a second while swallowing single-window
-// jitter.
-const TENSION_SMOOTHING = 0.33;
-
-const TENSION_STOPS: Array<[number, number, number]> = [
-  [76, 175, 80],   // calm  — the same green the success tick uses
-  [255, 152, 0],   // rising
-  [244, 67, 54],   // at the threshold — the red recording has always been
-];
-
-/** Returns "r, g, b" — the bare triplet, so CSS can reuse it for the halo. */
-function tensionRgb(fraction: number): string {
-  const t = Math.min(1, Math.max(0, fraction)) * (TENSION_STOPS.length - 1);
-  const i = Math.min(TENSION_STOPS.length - 2, Math.floor(t));
-  const f = t - i;
-  const [r1, g1, b1] = TENSION_STOPS[i];
-  const [r2, g2, b2] = TENSION_STOPS[i + 1];
-  const mix = (a: number, b: number) => Math.round(a + (b - a) * f);
-  return `${mix(r1, r2)}, ${mix(g1, g2)}, ${mix(b1, b2)}`;
-}
-
 export function App() {
   const [state, setState] = useState<AppState>('idle');
   const [message, setMessage] = useState<FlashMessage | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
-  // 0 = speaking as usual, 1 = at the nervousness threshold. Drives the colour
-  // of the microphone while recording. Stays 0 while there is no baseline.
-  const [voiceTension, setVoiceTension] = useState<number>(0);
-  // The ref is what the audio callback reads; the flag is what the render
-  // reads, because a ref filling in asynchronously would not repaint the
-  // button on its own — and a calm speaker produces no tension updates to
-  // repaint it either.
-  const rageBaselineRef = useRef<RageBaseline | null>(null);
-  const [hasRageBaseline, setHasRageBaseline] = useState<boolean>(false);
-  // The colour the microphone ended the recording on. Carried through
-  // transcribing and success so the widget keeps saying the same thing about
-  // the recording it is still working on, instead of flashing an unrelated
-  // orange and green.
-  const [lastTint, setLastTint] = useState<string | null>(null);
-  // Read once per recording, so a change in Settings takes effect on the next
-  // one without the widget polling for it.
-  // The threshold lives in a ref because the audio callback reads it; the
-  // on/off switch is state because the render reads it, and a ref would not
-  // repaint the button when the setting arrives.
-  const nervousnessRef = useRef<{ threshold: number }>({ threshold: DEFAULT_THRESHOLD });
-  const [nervousnessEnabled, setNervousnessEnabled] = useState<boolean>(true);
   const [appVersion, setAppVersion] = useState<string>('');
   const [hotkey, setHotkey] = useState<string>('CommandOrControl+Shift+R');
   const [isDragOver, setIsDragOver] = useState(false);
   const audioLevelRef = useRef<number>(0); // For lerp smoothing
   const recorderRef = useRef<AudioRecorder | null>(null);
-  // Everything needed to write one recording to disk for offline analysis of
-  // the nervousness detector. Filled at stop(), written once the transcript is
-  // back so the saved file carries the words that went with the audio.
-  const pendingDebugSampleRef = useRef<{
-    wavBase64: string;
-    meta: Record<string, unknown>;
-  } | null>(null);
-  // Voice measurements of the recording just finished. Kept separately from
-  // the debug sample above, which only exists when capture is on and the mode
-  // produced a WAV — scoring must work regardless of both.
-  const pendingVoiceRef = useRef<{
-    tiltDbPerKhz: number | null;
-    recordingSeconds: number;
-    speechSeconds: number;
-  } | null>(null);
   const lastAudioRef = useRef<string | null>(null);
   // Held alongside lastAudioRef so the retry path declares the recorder's
   // real MIME (opus) instead of falling back to audio/wav.
@@ -231,10 +165,6 @@ export function App() {
   // discard the session as soon as the recorder is up.
   const startInFlightRef = useRef(false);
   const pendingHoldReleaseRef = useRef(false);
-  // True when the in-flight transcription was started by the wake-word
-  // detector. We use this to send Enter after auto-paste so the hands-free
-  // flow fully submits without keyboard interaction.
-  const wakeWordTriggeredRef = useRef(false);
 
   const showMessage = useCallback((text: string, type: MessageType = 'success', isRetryable = false, hasErrorDetail = false) => {
     // Clear any existing timeout
@@ -291,19 +221,10 @@ export function App() {
         return;
       }
 
-      // local-only doesn't talk to any LLM, so no API key is required. For
-      // `local-then-gemini` the relevant key is the *polish* provider's key
-      // (which may be Gemini, OpenAI, Anthropic, …); for direct `gemini`
-      // mode it's the Gemini key. We only check that *some* key the
-      // upcoming pipeline needs exists.
-      const polishProvider = settings.polishProvider || 'google';
-      const polishKeyForMode =
-        settings.transcriptionMode === 'local-then-gemini'
-          ? (polishProvider === 'google'
-              ? settings.apiKey
-              : settings.providerConfigs?.[polishProvider]?.apiKey ?? '')
-          : settings.apiKey;
-      if (!polishKeyForMode && settings.transcriptionMode !== 'local-only') {
+      // `local` needs no key. For `cloud` it is the key of the chosen provider.
+      const openaiConfig = settings.providerConfigs?.openai;
+      const cloudKey = settings.cloudProvider === 'openai' ? openaiConfig?.apiKey : settings.apiKey;
+      if (!cloudKey && settings.transcriptionMode !== 'local') {
         showMessage('Set API key in settings', 'error', true);
         window.electronAPI.openSettingsWindow();
         // Save audio for retry after setting API key
@@ -321,12 +242,9 @@ export function App() {
 
       const options = buildTranscribeOptions(settings, previousTranscripts);
       let transcript: string;
-      if (
-        settings.transcriptionMode === 'local-then-gemini' ||
-        settings.transcriptionMode === 'local-only'
-      ) {
+      if (settings.transcriptionMode === 'local') {
         if (!wavBase64) {
-          throw new Error(`${settings.transcriptionMode} mode requires WAV audio (retainPcmForWav)`);
+          throw new Error('local mode requires WAV audio (retainPcmForWav)');
         }
         if (!window.electronAPI.transcribeLocalStt) {
           throw new Error('Local STT IPC not available');
@@ -335,39 +253,20 @@ export function App() {
         if (!localResult.ok) {
           throw new Error(`Local STT failed: ${localResult.error}`);
         }
-        if (settings.transcriptionMode === 'local-only') {
-          transcript = localResult.text;
-        } else {
-          // Polish via the user-selected provider (default: google).
-          const provider = settings.polishProvider || 'google';
-          const polishConfig = provider === 'google'
-            ? { apiKey: settings.apiKey, model: settings.model }
-            : settings.providerConfigs?.[provider] ?? { apiKey: '', model: '' };
-          if (!polishConfig.apiKey) {
-            throw new Error(`Polish provider "${provider}" has no API key set`);
+        transcript = localResult.text;
+      } else if (settings.cloudProvider === 'openai') {
+        // Prefer the 16 kHz WAV; a retry or a dropped file only has the original audio.
+        const useWav = !!wavBase64 && wavBase64.length * 0.75 < OPENAI_MAX_UPLOAD_BYTES;
+        transcript = await transcribeWithOpenAI(
+          useWav ? wavBase64 : audioBase64,
+          cloudKey as string,
+          openaiConfig?.model || DEFAULT_OPENAI_MODEL,
+          {
+            ...options,
+            signal: controller.signal,
+            ...(useWav ? { mimeType: 'audio/wav' } : mimeType && { mimeType }),
           }
-          if (!polishConfig.model) {
-            throw new Error(`Polish provider "${provider}" has no model selected`);
-          }
-          if (!window.electronAPI.polishText) {
-            throw new Error('Polish IPC not available');
-          }
-          const polishResult = await window.electronAPI.polishText(
-            provider,
-            polishConfig.apiKey,
-            polishConfig.model,
-            localResult.text,
-            {
-              languages: options.languages,
-              customKeywords: options.customKeywords,
-              previousTranscripts: options.previousTranscripts,
-            },
-          );
-          if (!polishResult.ok) {
-            throw new Error(`Polish failed: ${polishResult.error}`);
-          }
-          transcript = polishResult.text;
-        }
+        );
       } else {
         transcript = await transcribeAudio(audioBase64, settings.apiKey, settings.model, {
           ...options,
@@ -392,7 +291,7 @@ export function App() {
       //      dictionary — model picks a term it saw in the prompt when
       //      there's nothing to transcribe.
       //   4. A known generic English filler phrase ("Thank you.", "Bye.",
-      //      etc.) — both Parakeet and the LLM polish are prone to
+      //      etc.) — Parakeet and the cloud models are prone to
       //      spitting one of these out for silent audio.
       const echoesPrevious = trimmed.length > 0 && previousTranscripts.some(
         (prev) => prev.trim() === trimmed
@@ -419,8 +318,6 @@ export function App() {
         }
         lastAudioRef.current = null;
         lastAudioMimeTypeRef.current = undefined;
-        // Hands-free flow aborted: don't carry the flag into the next session.
-        wakeWordTriggeredRef.current = false;
         setState('idle');
         return;
       }
@@ -428,20 +325,11 @@ export function App() {
       // Copy to clipboard
       // autoPaste=true: dispatch ⌘V into the focused window so the
       // transcript appears at the cursor without keyboard interaction.
-      // When this transcription was started by the wake-word detector AND
-      // the user enabled `wakeWordPressEnter`, also press Enter so the
-      // chat / form / prompt is submitted hands-free. Both keystrokes are
-      // dispatched by main in a single osascript so V definitely lands
-      // before Enter.
-      const submitOnPaste =
-        wakeWordTriggeredRef.current && (settings.wakeWordPressEnter ?? true);
-      // Consume the wake-word flag so the next manual recording doesn't
-      // inherit the auto-Enter behaviour.
-      wakeWordTriggeredRef.current = false;
+      // The V keystroke is dispatched by main.
       // copyToClipboard now resolves only after the V keystroke has been
       // dispatched, so the success state below lights up only after the
       // paste actually lands in the target window.
-      await window.electronAPI.copyToClipboard(transcript, true, submitOnPaste);
+      await window.electronAPI.copyToClipboard(transcript, true);
       if (requestId !== transcribeRequestIdRef.current) {
         return;
       }
@@ -455,30 +343,6 @@ export function App() {
       }
       void window.electronAPI.trackEvent('transcription_success', { transcript_length: transcript.length });
       void window.electronAPI.recordTranscriptionStats(transcript, lastRecordingDurationRef.current);
-
-      // Nervousness scoring. Measures only for now — main logs the verdict and
-      // nothing acts on it. Fire-and-forget like the rest of this block.
-      const voice = pendingVoiceRef.current;
-      pendingVoiceRef.current = null;
-      if (voice && window.electronAPI.scoreNervousness) {
-        void window.electronAPI.scoreNervousness(
-          voice.tiltDbPerKhz,
-          voice.recordingSeconds,
-          voice.speechSeconds
-        );
-      }
-
-      // Debug capture. Fire-and-forget and last in the side-effect block: it
-      // must never delay the OK indicator, and main drops it outright unless
-      // the capture marker file is there.
-      const sample = pendingDebugSampleRef.current;
-      pendingDebugSampleRef.current = null;
-      if (sample && window.electronAPI.saveDebugRecording) {
-        void window.electronAPI.saveDebugRecording(sample.wavBase64, {
-          ...sample.meta,
-          transcript,
-        });
-      }
 
       // Clear saved audio on success
       lastAudioRef.current = null;
@@ -548,7 +412,6 @@ export function App() {
     // Reset audio level visualization
     audioLevelRef.current = 0;
     setAudioLevel(0);
-    setVoiceTension(0);
 
     try {
       const audioBase64 = await recorderRef.current.stop();
@@ -571,26 +434,7 @@ export function App() {
 
       // For local STT modes the recorder retained PCM — pull a 16 kHz WAV
       // out alongside the opus blob so the local pipeline has what it wants.
-      const loudness = recorderRef.current?.getLoudnessStats() ?? null;
-      pendingVoiceRef.current = {
-        tiltDbPerKhz: loudness?.tiltDbPerKhz ?? null,
-        recordingSeconds: recordingDuration / 1000,
-        speechSeconds: recorderRef.current?.getSpeechSeconds() ?? 0,
-      };
-
       const wavBase64 = recorderRef.current?.getWavBase64() ?? undefined;
-      pendingDebugSampleRef.current = wavBase64
-        ? {
-            wavBase64,
-            meta: {
-              recordedAt: new Date().toISOString(),
-              durationMs: recordingDuration,
-              device: recorderRef.current?.getDeviceLabel() ?? '',
-              loudness,
-              frameSeriesDb: recorderRef.current?.getFrameSeriesDb() ?? [],
-            },
-          }
-        : null;
       // Pass the actual recorder MIME ('audio/webm;codecs=opus') so the
       // Gemini-direct path declares the real format in the request body.
       // Without this we were sending opus bytes labelled as audio/wav.
@@ -691,55 +535,6 @@ export function App() {
         stopRecordingAndTranscribe();
       });
       // Set up audio level callback for visualization with smoothing
-      // The live reading is a distance from the speaker's baseline, so fetch it
-      // once per recording rather than per frame. Fire-and-forget: a missing
-      // baseline just means the microphone keeps its usual colour.
-      rageBaselineRef.current = null;
-      setHasRageBaseline(false);
-      setLastTint(null);
-      void window.electronAPI.getSettings().then((s) => {
-        nervousnessRef.current = { threshold: s.nervousness?.threshold ?? DEFAULT_THRESHOLD };
-        setNervousnessEnabled(s.nervousness?.enabled ?? true);
-      });
-      if (!window.electronAPI.nervousnessBaseline) {
-        // Older preload: the tint cannot work and silence would look like a
-        // dead feature rather than a stale build.
-        window.electronAPI.log?.('[Tint] nervousnessBaseline IPC missing — app needs a restart');
-      }
-      void window.electronAPI.nervousnessBaseline?.().then((baseline) => {
-        rageBaselineRef.current = baseline ?? null;
-        const usable = isBaselineUsable(baseline ?? null);
-        setHasRageBaseline(usable);
-        window.electronAPI.log?.(
-          `[Tint] baseline n=${baseline?.count ?? 0} centre=${baseline?.centre?.toFixed(2) ?? 'n/a'} ` +
-            `spread=${baseline?.spread?.toFixed(2) ?? 'n/a'} usable=${usable}`
-        );
-      });
-      let tiltEmissions = 0;
-      // The reading still wanders a little between windows. Ease the colour
-      // towards it instead of snapping, so ordinary speech cannot make the
-      // microphone blink amber — a blinking indicator is one nobody believes.
-      let smoothedTension = 0;
-      recorderRef.current.setOnVoiceTilt((rollingTilt, windowSeconds) => {
-        const tension = liveTension(
-          rollingTilt,
-          rageBaselineRef.current,
-          windowSeconds,
-          nervousnessRef.current.threshold
-        );
-        smoothedTension += (tension - smoothedTension) * TENSION_SMOOTHING;
-        setVoiceTension(smoothedTension);
-        setLastTint(tensionRgb(smoothedTension));
-        // First emission and then sparsely: enough to prove the path is live
-        // without a line per frame.
-        tiltEmissions++;
-        if (tiltEmissions === 1 || tiltEmissions % 20 === 0) {
-          window.electronAPI.log?.(
-            `[Tint] #${tiltEmissions} tilt=${rollingTilt.toFixed(2)} win=${windowSeconds.toFixed(1)}s ` +
-              `tension=${tension.toFixed(2)}`
-          );
-        }
-      });
       recorderRef.current.setOnAudioLevel((level) => {
         const current = audioLevelRef.current;
         let smoothed: number;
@@ -893,17 +688,6 @@ export function App() {
     };
   }, [cancelRecording]);
 
-  // Wake-word detection: main process emits wake-word-triggered just before
-  // start-recording, so we set the ref first and the start handler picks it up.
-  useEffect(() => {
-    const unsubscribe = window.electronAPI.onWakeWordTriggered?.(() => {
-      wakeWordTriggeredRef.current = true;
-    });
-    return () => {
-      unsubscribe?.();
-    };
-  }, []);
-
   // Track the hold-to-record key state so silence-detection can skip its
   // auto-stop while the user is still holding the key.
   useEffect(() => {
@@ -1020,21 +804,6 @@ export function App() {
     };
   }, []);
 
-  // While recording the microphone carries the live reading; afterwards it
-  // holds whatever the recording ended on, so the spinner and the tick keep
-  // reporting the same recording rather than switching to a colour of their
-  // own. With no baseline there is nothing to report, and grey says that
-  // honestly — red would read as "you are shouting".
-  const tintAvailable = hasRageBaseline && nervousnessEnabled;
-  const micTintRgb =
-    state === 'recording'
-      ? tintAvailable
-        ? tensionRgb(voiceTension)
-        : null
-      : (state === 'transcribing' || state === 'success')
-        ? lastTint
-        : null;
-  const micHasNoSignal = state === 'recording' && !tintAvailable;
   return (
     <div
       ref={widgetRef}
@@ -1056,11 +825,7 @@ export function App() {
       <div className="mic-button-container">
         {state === 'recording' && <AudioLevelRing level={audioLevel} />}
         <button
-          className={`mic-button ${state}${micHasNoSignal ? ' no-signal' : ''}`}
-          style={micTintRgb ? ({
-            background: `rgb(${micTintRgb})`,
-            '--mic-glow-rgb': micTintRgb,
-          } as CSSProperties) : undefined}
+          className={`mic-button ${state}`}
           onClick={handleToggleRecording}
           aria-label={
             state === 'idle' || state === 'success'

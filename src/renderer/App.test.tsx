@@ -75,15 +75,10 @@ const defaultSettings = {
   holdToRecordEnabled: false,
   holdToRecordKey: 'RightMeta' as const,
   autoPasteEnabled: false,
-  wakeWordEnabled: false,
-  wakeWordKeyword: 'hey_jarvis' as const,
-  wakeWordThreshold: 0.5,
-  wakeWordPressEnter: true,
-  transcriptionMode: 'gemini' as const,
-  polishProvider: 'google' as const,
+  transcriptionMode: 'cloud' as const,
+  cloudProvider: 'google' as const,
   providerConfigs: {},
   mediaPauseMode: 'duck' as const,
-  nervousness: { enabled: true, threshold: 1.6, streakForBlock: 3, blockSeconds: 30 },
 };
 
 /**

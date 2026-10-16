@@ -13,25 +13,10 @@ import { captureCurrentClipboard, addTranscriptionToHistory, restoreClipboardEnt
 import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts } from './transcript-history';
 import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from './stats';
 import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
-import { startWakeWord, stopWakeWord, listAvailableModels as listWakeWordModels, customModelsDir as wakeWordCustomDir } from './wake-word';
 import { ParakeetService, type ParakeetStatus } from './parakeet-service';
-import { polishViaProvider, type PolishOptions } from '../lib/polish';
-import type { LLMProviderId } from '../shared/types';
+import { migrateSettings } from './settings-migration';
+import type { CloudProvider } from '../shared/types';
 import type { AppSettings } from '../shared/types';
-import { DEFAULT_THRESHOLD, nextStreak, shouldBlock } from '../lib/rage';
-import {
-  startCooldown,
-  endCooldown,
-  isCooldownActive,
-  registerCooldownShutdown,
-} from './cooldown';
-import {
-  loadRageBaseline,
-  recordAndScore,
-  resetRageBaseline,
-  getRageHistoryCount,
-  getRageBaseline,
-} from './rage-baseline';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,13 +74,13 @@ setGlobalDispatcher(
 );
 log('[net] undici Agent configured: keep-alive, 3s connect / 5s headers / 60s body');
 
-// Wrap globalThis.fetch so we can see every outgoing HTTP call the AI SDK
-// (or any other library in main) makes — useful when polish is slow and we
-// want to know whether the SDK is retrying on 4xx/5xx behind our backs.
+// Wrap globalThis.fetch so we can see every outgoing HTTP call that a library
+// in main makes — useful when a request is slow and we want to know whether
+// it is retrying on 4xx/5xx behind our backs.
 // We only log calls to LLM endpoints so analytics/telemetry doesn't flood.
 const __origFetch = globalThis.fetch.bind(globalThis);
 let __fetchSeq = 0;
-const LLM_HOST_PATTERN = /(generativelanguage|api\.openai|api\.anthropic|api\.groq|api\.deepseek|openrouter\.ai)\./i;
+const LLM_HOST_PATTERN = /(generativelanguage|api\.openai)\./i;
 const loggedFetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
   const url = typeof input === 'string'
     ? input
@@ -419,20 +404,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   holdToRecordEnabled: true,
   holdToRecordKey: 'LeftAlt',
   autoPasteEnabled: false,
-  wakeWordEnabled: false,
-  wakeWordKeyword: 'hey_jarvis',
-  wakeWordThreshold: 0.5,
-  wakeWordPressEnter: true,
-  transcriptionMode: 'gemini',
-  polishProvider: 'google',
+  transcriptionMode: 'cloud',
+  cloudProvider: 'google',
   providerConfigs: {},
   mediaPauseMode: 'duck',
-  nervousness: {
-    enabled: true,
-    threshold: DEFAULT_THRESHOLD,
-    streakForBlock: 3,
-    blockSeconds: 30,
-  },
 };
 
 function getSettingsPath(): string {
@@ -445,13 +420,7 @@ function loadSettings(): AppSettings {
     if (fs.existsSync(settingsPath)) {
       const data = fs.readFileSync(settingsPath, 'utf-8');
       const parsed = JSON.parse(data);
-      const settings = {
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-        // The spread above is shallow, so a nested block from an older
-        // settings file would arrive missing any field added since.
-        nervousness: { ...DEFAULT_SETTINGS.nervousness, ...(parsed.nervousness ?? {}) },
-      };
+      const settings = { ...DEFAULT_SETTINGS, ...migrateSettings(parsed) };
       // Sync launchAtStartup with actual system state
       const { openAtLogin } = app.getLoginItemSettings();
       settings.launchAtStartup = openAtLogin;
@@ -1265,35 +1234,6 @@ function setupHoldToRecord() {
   }
 }
 
-async function setupWakeWord() {
-  await stopWakeWord();
-  if (!appSettings.wakeWordEnabled) {
-    log('[WakeWord] Disabled');
-    return;
-  }
-  const ok = await startWakeWord({
-    keyword: appSettings.wakeWordKeyword,
-    threshold: appSettings.wakeWordThreshold,
-    onDetect: ({ keyword, probability }) => {
-      log(`[WakeWord] Triggered: ${keyword} (p=${probability.toFixed(3)}) — starting recording`);
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        // Same reasoning as the hold-to-record path: duck volume in main
-        // before the IPC roundtrip so the recording's start isn't drowned.
-        pauseMediaPlayback();
-        // Order matters: renderer must see wake-word-triggered before
-        // start-recording so it can flag the upcoming session as hands-free.
-        mainWindow.webContents.send('wake-word-triggered');
-        mainWindow.webContents.send('start-recording');
-      }
-    },
-    onError: (error) => {
-      log('[WakeWord] Error:', error.message);
-    },
-    onLog: (message) => log(message),
-  });
-  log(`[WakeWord] setup ok=${ok} keyword=${appSettings.wakeWordKeyword} threshold=${appSettings.wakeWordThreshold}`);
-}
-
 function createApplicationMenu() {
   const isMac = process.platform === 'darwin';
 
@@ -1607,8 +1547,6 @@ app.whenReady().then(() => {
 
   // Load transcript history for context feature
   loadTranscriptHistory();
-  loadRageBaseline();
-  registerCooldownShutdown(log);
 
   // Load usage statistics
   loadStats();
@@ -1629,15 +1567,10 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   registerGlobalShortcuts();
-  void setupWakeWord();
-
-  // Warm-load Parakeet at startup when the user has selected a local mode —
+  // Warm-load Parakeet at startup when the user has selected local mode —
   // model load is ~10s on M-series Macs and we'd rather pay it once at boot
   // than during the first transcription.
-  if (
-    appSettings.transcriptionMode === 'local-then-gemini' ||
-    appSettings.transcriptionMode === 'local-only'
-  ) {
+  if (appSettings.transcriptionMode === 'local') {
     parakeetService.ensureStarted().catch((err) => {
       log(`[Parakeet] startup warm-load failed: ${(err as Error).message}`);
     });
@@ -1678,7 +1611,6 @@ app.on('will-quit', () => {
   restorePauseOnQuit();
   globalShortcut.unregisterAll();
   stopKeyboardHook();
-  void stopWakeWord();
   void parakeetService.stop();
   stopHeartbeat();
   if (tray) {
@@ -1698,7 +1630,7 @@ app.on('activate', () => {
 });
 
 // IPC handlers
-ipcMain.handle('copy-to-clipboard', async (_event, text: string, autoPaste = false, pressEnterAfter = false) => {
+ipcMain.handle('copy-to-clipboard', async (_event, text: string, autoPaste = false) => {
   log('[Clipboard] Copying transcript (' + text.length + ' chars):', text);
   const willAutoPaste = autoPaste && appSettings.autoPasteEnabled;
   // Take a snapshot only when we're about to auto-paste; otherwise the
@@ -1716,12 +1648,12 @@ ipcMain.handle('copy-to-clipboard', async (_event, text: string, autoPaste = fal
   updateTrayMenu();
 
   if (willAutoPaste) {
-    log(`[Clipboard] Auto-paste branch hit — dispatching keystroke (pressEnterAfter=${pressEnterAfter}, hasSnapshot=${restoreSnapshotEntry !== null})`);
+    log(`[Clipboard] Auto-paste branch hit — dispatching keystroke (hasSnapshot=${restoreSnapshotEntry !== null})`);
     // Wait until the V keystroke has actually been dispatched before
     // returning, so the renderer's "success" state lights up only after
     // the paste lands — not before. Clipboard restore still happens
     // asynchronously after the keystroke.
-    await pasteIntoActiveWindow(pressEnterAfter, restoreSnapshotEntry);
+    await pasteIntoActiveWindow(restoreSnapshotEntry);
   } else {
     log(
       `[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`
@@ -1764,7 +1696,6 @@ function scheduleClipboardRestore(snapshot: ClipboardEntry | null): void {
 }
 
 function pasteIntoActiveWindow(
-  pressEnterAfter = false,
   restoreSnapshotEntry: ClipboardEntry | null = null,
 ): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -1791,12 +1722,10 @@ function pasteIntoActiveWindow(
           (frontErr, frontStdout) => {
             const frontApp = frontStdout?.trim() || '(unknown)';
             log(`[AutoPaste] frontmost app at paste time: "${frontApp}"${frontErr ? ` (err: ${frontErr.message})` : ''}`);
-            const script = pressEnterAfter
-              ? `tell application "System Events" to key code 9 using command down\ndelay 0.25\ntell application "System Events" to key code 36`
-              : `tell application "System Events" to key code 9 using command down`;
-            log(`[AutoPaste] osascript dispatch (pressEnterAfter=${pressEnterAfter})`);
+            const script = `tell application "System Events" to key code 9 using command down`;
+            log('[AutoPaste] osascript dispatch');
             exec(
-              `osascript -e '${script.replace(/\n/g, "' -e '")}'`,
+              `osascript -e '${script}'`,
               (error, _stdout, stderr) => {
                 if (error) {
                   log('[AutoPaste] Failed:', error.message, '| stderr:', stderr);
@@ -1812,8 +1741,7 @@ function pasteIntoActiveWindow(
       }, 50);
     } else if (process.platform === 'win32') {
       setTimeout(() => {
-        const keys = pressEnterAfter ? '^v{ENTER}' : '^v';
-        const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
+        const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')`;
         exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {
           if (error) log('[AutoPaste] Failed:', error.message);
           scheduleClipboardRestore(restoreSnapshotEntry);
@@ -1822,10 +1750,7 @@ function pasteIntoActiveWindow(
       }, 50);
     } else {
       setTimeout(() => {
-        const cmd = pressEnterAfter
-          ? 'xdotool key --clearmodifiers ctrl+v && sleep 0.25 && xdotool key --clearmodifiers Return'
-          : 'xdotool key --clearmodifiers ctrl+v';
-        exec(cmd, (error) => {
+        exec('xdotool key --clearmodifiers ctrl+v', (error) => {
           if (error) log('[AutoPaste] xdotool not available or failed:', error.message);
           scheduleClipboardRestore(restoreSnapshotEntry);
           resolve();
@@ -1841,10 +1766,6 @@ function pasteIntoActiveWindow(
 // rest of the app's diagnostics.
 ipcMain.on('renderer-log', (_event, message: string) => {
   log('[Renderer]', message);
-});
-
-ipcMain.handle('list-wake-word-models', () => {
-  return listWakeWordModels();
 });
 
 ipcMain.handle('parakeet-status', () => {
@@ -1886,190 +1807,13 @@ ipcMain.handle('transcribe-local-stt', async (_event, wavBase64: string) => {
   }
 });
 
-// --- Debug recording capture -------------------------------------------------
-// Keeping the raw audio around is what makes the nervousness detector tunable
-// offline: spectral shape, pitch and level can all be re-measured from a saved
-// file, instead of asking the speaker to dictate once per experiment. Off
-// unless the marker file exists, so it never runs by accident.
-const DEBUG_RECORDINGS_DIR = path.join(os.homedir(), '.nerd-dictum', 'recordings');
-const DEBUG_RECORDINGS_FLAG = path.join(os.homedir(), '.nerd-dictum', 'keep-recordings');
-
-// Captured audio is for debugging, not an archive, so it expires. The marker
-// file doubles as the setting: write a number of hours into it to override,
-// leave it empty for the default. Anything unparseable falls back to the
-// default rather than keeping recordings forever by accident.
-const DEBUG_RECORDINGS_DEFAULT_TTL_HOURS = 1;
-
-function debugRecordingEnabled(): boolean {
-  try {
-    return fs.existsSync(DEBUG_RECORDINGS_FLAG);
-  } catch {
-    return false;
-  }
-}
-
-function debugRecordingTtlMs(): number {
-  let hours = DEBUG_RECORDINGS_DEFAULT_TTL_HOURS;
-  try {
-    const raw = fs.readFileSync(DEBUG_RECORDINGS_FLAG, 'utf-8').trim();
-    const parsed = Number(raw);
-    if (raw && Number.isFinite(parsed) && parsed > 0) hours = parsed;
-  } catch {
-    // Missing or unreadable marker — the default stands.
-  }
-  return hours * 60 * 60 * 1000;
-}
-
-/** Delete captured recordings past their time to live. Best effort throughout. */
-function pruneDebugRecordings(): void {
-  const cutoff = Date.now() - debugRecordingTtlMs();
-  let removed = 0;
-  try {
-    for (const name of fs.readdirSync(DEBUG_RECORDINGS_DIR)) {
-      if (!name.endsWith('.wav') && !name.endsWith('.json')) continue;
-      const full = path.join(DEBUG_RECORDINGS_DIR, name);
-      try {
-        if (fs.statSync(full).mtimeMs < cutoff) {
-          fs.unlinkSync(full);
-          removed++;
-        }
-      } catch {
-        // A file that vanished under us needs no deleting.
-      }
-    }
-  } catch {
-    // No directory yet — nothing to prune.
-  }
-  if (removed > 0) log(`[DebugRecording] pruned ${removed} expired file(s)`);
-}
-
-ipcMain.handle('debug-recording-enabled', () => debugRecordingEnabled());
-
-ipcMain.handle('save-debug-recording', (_event, wavBase64: string, meta: unknown) => {
-  if (!debugRecordingEnabled()) return false;
-  try {
-    fs.mkdirSync(DEBUG_RECORDINGS_DIR, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const base = path.join(DEBUG_RECORDINGS_DIR, stamp);
-    fs.writeFileSync(`${base}.wav`, Buffer.from(wavBase64, 'base64'));
-    fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2), 'utf-8');
-    log(`[DebugRecording] saved ${base}.wav`);
-    pruneDebugRecordings();
-    return true;
-  } catch (error) {
-    log('[DebugRecording] save failed:', error);
-    return false;
-  }
-});
-
-// --- Nervousness scoring -----------------------------------------------------
-// Measures only. Nothing warns, nothing blocks: the score is logged so it can
-// be watched against real dictation before it is allowed to act.
-ipcMain.handle(
-  'score-nervousness',
-  (_event, tiltDbPerKhz: number | null, recordingSeconds: number, speechSeconds: number) => {
-    const verdict = recordAndScore(
-      tiltDbPerKhz,
-      recordingSeconds,
-      speechSeconds,
-      appSettings.nervousness?.threshold
-    );
-    const tilt = tiltDbPerKhz === null ? 'n/a' : `${tiltDbPerKhz.toFixed(2)}`;
-    if (verdict.reason) {
-      log(
-        `[Rage] no verdict (${verdict.reason}) tilt=${tilt} ` +
-          `rec=${recordingSeconds.toFixed(1)}s speech=${speechSeconds.toFixed(1)}s ` +
-          `baseline=${verdict.baseline?.count ?? 0}`
-      );
-    } else {
-      const b = verdict.baseline!;
-      log(
-        `[Rage] score=${verdict.score.toFixed(2)} ${verdict.hot ? 'HOT' : 'calm'} ` +
-          `tilt=${tilt} baseline=${b.centre.toFixed(2)}+-${b.spread.toFixed(2)} n=${b.count}`
-      );
-    }
-
-    const settings = appSettings.nervousness ?? DEFAULT_SETTINGS.nervousness;
-    hotStreak = nextStreak(hotStreak, verdict);
-    if (
-      settings.enabled &&
-      shouldBlock(hotStreak, settings.streakForBlock) &&
-      !isCooldownActive()
-    ) {
-      // Cleared before the block, not after: whatever happens to the window,
-      // the user does not come back to a streak that fires again immediately.
-      const streak = hotStreak;
-      hotStreak = 0;
-      startCooldown(
-        { seconds: settings.blockSeconds, streak },
-        { isDev: isRendererDevMode(), devPort: DEV_PORT, log }
-      );
-    }
-    return verdict;
-  }
-);
-
-// Tense recordings in a row. Lives in memory only: a streak is about the last
-// few minutes, and one that survived a restart would be describing a mood the
-// user has long since left.
-let hotStreak = 0;
-
-ipcMain.handle('reset-nervousness-baseline', () => {
-  resetRageBaseline();
-  return true;
-});
-
-ipcMain.handle('nervousness-baseline-count', () => getRageHistoryCount());
-
-// Nobody should have to get genuinely angry three times to find out what the
-// block looks like, or how long the chosen duration actually feels.
-ipcMain.handle('preview-cooldown', () => {
-  const settings = appSettings.nervousness ?? DEFAULT_SETTINGS.nervousness;
-  return startCooldown(
-    { seconds: settings.blockSeconds, streak: settings.streakForBlock },
-    { isDev: isRendererDevMode(), devPort: DEV_PORT, log }
-  );
-});
-
-// The renderer needs the baseline to colour the microphone while recording:
-// the live reading is a distance from it, and the reading is worthless without
-// it. Fetched once per recording, not per frame.
-ipcMain.handle('nervousness-baseline', () => getRageBaseline());
-
-ipcMain.handle('open-wake-word-folder', () => {
-  const dir = wakeWordCustomDir();
-  shell.openPath(dir);
-  return dir;
-});
-
 ipcMain.handle('list-gemini-models', async () => {
   const apiKey = appSettings.apiKey || process.env.GEMINI_API_KEY || '';
   return fetchProviderModels('google', apiKey);
 });
 
-ipcMain.handle('list-provider-models', async (_event, provider: LLMProviderId, apiKey: string) => {
+ipcMain.handle('list-provider-models', async (_event, provider: CloudProvider, apiKey: string) => {
   return fetchProviderModels(provider, apiKey);
-});
-
-ipcMain.handle('polish-text', async (
-  _event,
-  provider: LLMProviderId,
-  apiKey: string,
-  model: string,
-  rawTranscript: string,
-  options?: PolishOptions,
-) => {
-  const t0 = Date.now();
-  log(`[Polish/${provider}] start model=${model} rawLen=${rawTranscript.length}ch`);
-  try {
-    const text = await polishViaProvider({ provider, apiKey, model, rawTranscript, options });
-    log(`[Polish/${provider}] ok in ${Date.now() - t0}ms outLen=${text.length}ch out="${text.replace(/\n/g, '\\n')}"`);
-    return { ok: true as const, text };
-  } catch (error) {
-    const err = error as Error;
-    log(`[Polish/${provider}] FAILED in ${Date.now() - t0}ms: ${err.message}`);
-    return { ok: false as const, error: err.message };
-  }
 });
 
 interface ProviderModel {
@@ -2081,7 +1825,7 @@ type ProviderModelsResult =
   | { ok: true; models: ProviderModel[] }
   | { ok: false; error: string; models: [] };
 
-async function fetchProviderModels(provider: LLMProviderId, apiKey: string): Promise<ProviderModelsResult> {
+async function fetchProviderModels(provider: CloudProvider, apiKey: string): Promise<ProviderModelsResult> {
   if (!apiKey) {
     return { ok: false, error: 'API key not set', models: [] };
   }
@@ -2096,7 +1840,7 @@ async function fetchProviderModels(provider: LLMProviderId, apiKey: string): Pro
   }
 }
 
-async function fetchProviderModelsImpl(provider: LLMProviderId, apiKey: string): Promise<ProviderModel[]> {
+async function fetchProviderModelsImpl(provider: CloudProvider, apiKey: string): Promise<ProviderModel[]> {
   if (provider === 'google') {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`;
     const response = await fetch(url);
@@ -2114,38 +1858,15 @@ async function fetchProviderModelsImpl(provider: LLMProviderId, apiKey: string):
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  if (provider === 'anthropic') {
-    const response = await fetch('https://api.anthropic.com/v1/models?limit=100', {
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = (await response.json()) as { data?: Array<{ id: string; display_name?: string }> };
-    return (data.data || [])
-      .map((m) => ({ id: m.id, displayName: m.display_name || m.id }))
-      .sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  // openai / groq / deepseek / openrouter share the OpenAI-compatible endpoint shape.
-  const baseUrl = OPENAI_COMPAT_BASE_URLS[provider];
-  if (!baseUrl) throw new Error(`Unknown provider: ${provider}`);
-  const response = await fetch(`${baseUrl}/models`, {
+  const response = await fetch('https://api.openai.com/v1/models', {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = (await response.json()) as { data?: Array<{ id: string; name?: string }> };
-  // OpenRouter returns a human-friendly `name` ("Anthropic: Claude 3.5 Sonnet")
-  // alongside the slug id ("anthropic/claude-3.5-sonnet"). Use it when present.
+  const data = (await response.json()) as { data?: Array<{ id: string }> };
   return (data.data || [])
-    .map((m) => ({ id: m.id, displayName: m.name || m.id }))
+    .map((m) => ({ id: m.id, displayName: m.id }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
-
-const OPENAI_COMPAT_BASE_URLS: Record<Exclude<LLMProviderId, 'google' | 'anthropic'>, string> = {
-  openai: 'https://api.openai.com/v1',
-  groq: 'https://api.groq.com/openai/v1',
-  deepseek: 'https://api.deepseek.com/v1',
-  openrouter: 'https://openrouter.ai/api/v1',
-};
 
 // API key: prefer saved settings, fallback to env var
 ipcMain.handle('get-api-key', () => {
@@ -2179,12 +1900,8 @@ ipcMain.handle('get-settings', () => {
     holdToRecordEnabled: appSettings.holdToRecordEnabled,
     holdToRecordKey: appSettings.holdToRecordKey,
     autoPasteEnabled: appSettings.autoPasteEnabled,
-    wakeWordEnabled: appSettings.wakeWordEnabled,
-    wakeWordKeyword: appSettings.wakeWordKeyword,
-    wakeWordThreshold: appSettings.wakeWordThreshold,
-    wakeWordPressEnter: appSettings.wakeWordPressEnter,
     transcriptionMode: appSettings.transcriptionMode,
-    polishProvider: appSettings.polishProvider,
+    cloudProvider: appSettings.cloudProvider,
     providerConfigs: appSettings.providerConfigs,
     mediaPauseMode: appSettings.mediaPauseMode,
   };
@@ -2195,9 +1912,6 @@ ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
   const oldWidgetHidden = appSettings.widgetHidden;
   const oldHoldToRecordEnabled = appSettings.holdToRecordEnabled;
   const oldHoldToRecordKey = appSettings.holdToRecordKey;
-  const oldWakeWordEnabled = appSettings.wakeWordEnabled;
-  const oldWakeWordKeyword = appSettings.wakeWordKeyword;
-  const oldWakeWordThreshold = appSettings.wakeWordThreshold;
   appSettings = { ...appSettings, ...settings };
   const result = saveSettings(appSettings);
 
@@ -2215,13 +1929,9 @@ ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
     setupHoldToRecord();
   }
 
-  // Restart wake-word service if its settings changed
-  const wakeWordChanged =
-    (settings.wakeWordEnabled !== undefined && settings.wakeWordEnabled !== oldWakeWordEnabled) ||
-    (settings.wakeWordKeyword !== undefined && settings.wakeWordKeyword !== oldWakeWordKeyword) ||
-    (settings.wakeWordThreshold !== undefined && settings.wakeWordThreshold !== oldWakeWordThreshold);
-  if (wakeWordChanged) {
-    void setupWakeWord();
+  // Parakeet stays out of memory unless the mode is `local`.
+  if (settings.transcriptionMode !== undefined && settings.transcriptionMode !== 'local') {
+    void parakeetService.stop();
   }
 
   // Show/hide widget if widgetHidden setting changed

@@ -31,7 +31,9 @@
   --color-info: #2196f3;
 
   /* Widget-specific */
-  --color-recording: #f44336;
+  /* Recording is its own state: this used to carry --color-error's red,
+     which read as a fault while merely dictating. */
+  --color-recording: #4caf50;
   --color-transcribing: #ff9800;
   --color-mic-idle: #3a3a3a;
   --color-tachometer-bg: rgba(255, 255, 255, 0.15);

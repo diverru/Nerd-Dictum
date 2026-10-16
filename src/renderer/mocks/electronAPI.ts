@@ -23,15 +23,10 @@ const defaultSettings: AppSettings = {
   holdToRecordEnabled: true,
   holdToRecordKey: 'RightMeta',
   autoPasteEnabled: false,
-  wakeWordEnabled: false,
-  wakeWordKeyword: 'hey_jarvis',
-  wakeWordThreshold: 0.5,
-  wakeWordPressEnter: true,
-  transcriptionMode: 'gemini',
-  polishProvider: 'google',
+  transcriptionMode: 'cloud',
+  cloudProvider: 'google',
   providerConfigs: {},
   mediaPauseMode: 'duck',
-  nervousness: { enabled: true, threshold: 1.6, streakForBlock: 3, blockSeconds: 30 },
 };
 
 const defaultStats: StatsWithDerived = {

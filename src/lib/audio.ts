@@ -26,80 +26,6 @@ const MAX_RECORDING_MS = 15 * 60 * 1000; // 15 minutes
 const SILENCE_THRESHOLD = 0.01; // RMS threshold below which audio is considered silence
 const DEFAULT_SILENCE_DURATION_MS = 2500; // Stop recording after 2.5s of silence
 
-// Loudness measurement constants
-// Digital silence has no decibel value (log of zero). Anything at or below
-// this is treated as "as quiet as we bother to measure".
-const DB_FLOOR = -100;
-// The worklet posts one frame per render quantum (128 samples), so at 16 kHz
-// this is roughly half a second of actual speech. Below that the percentiles
-// are noise and we report nothing rather than a number that looks real.
-const MIN_SPEECH_FRAMES_FOR_LOUDNESS = 60;
-// Averaging lengths measured side by side, in milliseconds. A raw frame is
-// ~8 ms, far too short: ordinary speech swings 13-16 dB between vowels and
-// consonants, which would read as shouting. Shouting is sustained level, so
-// the right window is the shortest one at which an ordinary phrase stops
-// jumping around — that is what these candidates are here to find out.
-const CANDIDATE_WINDOW_MS = [250, 500, 1000, 2000];
-// Fewer windows than this and the percentiles describe nothing.
-const MIN_WINDOWS_FOR_STATS = 4;
-
-// Spectral tilt constants.
-// Tilt is the slope of the log spectrum: how fast energy falls off as
-// frequency rises. A calm voice falls off steeply; a strained one pushes
-// energy upward and the slope flattens. Measured on this speaker, calm sat at
-// -9.3 dB/kHz with a spread of only +-0.33, while deliberately angry
-// recordings landed 1.5 to 2.5 dB/kHz higher — four to seven times the calm
-// spread. That tiny spread is what makes it a better signal than loudness.
-//
-// Crucially it is a SLOPE, so a constant gain offset cancels out: a
-// microphone that flattens level in hardware cannot flatten this.
-const TILT_FFT_SIZE = 1024;
-// 200 Hz skips the fundamental and room rumble; 6 kHz is the top of useful
-// speech energy at a 16 kHz sample rate.
-const TILT_MIN_HZ = 200;
-const TILT_MAX_HZ = 6000;
-// One spectrum per worklet frame (~8 ms), about 125 a second.
-//
-// This was every fourth frame, and that was the single biggest source of
-// error in the whole detector. The offline analysis that established tilt as
-// the signal used every frame and produced a calm spread of 0.33 dB/kHz; the
-// live path, on a quarter of the samples, produced 1.15 — noise in a median
-// falls as the square root of the count, and 1.15/0.33 is almost exactly the
-// factor of two that a quarter of the samples predicts.
-//
-// The angry-to-calm difference is only 1.5-2.5 dB/kHz, so at 1.15 of noise
-// the signal was drowning. Reading every frame costs one more FFT read per
-// 8 ms, which the browser does anyway.
-const TILT_FRAME_STRIDE = 1;
-// Below this many spectra the median is not worth reporting. At one spectrum
-// per frame this is about half a second of speech; shorter than that the
-// median is noise. Above it the scoring damps short recordings itself.
-const MIN_TILT_SAMPLES = 60;
-// Rolling window for the live indicator, in spectra. At ~30 a second this is
-// roughly two seconds of speech: long enough that one hard consonant cannot
-// swing the colour, short enough that the speaker sees themselves getting
-// louder while it is happening rather than afterwards.
-// Measured on real recordings: the rolling tilt median swings 1.70 dB/kHz
-// across a calm recording on a 3-second window, 1.23 on 5 seconds, 1.04 on 8.
-// The angry-calm difference is 1.5-2.5, so a 3-second window flickered amber
-// on ordinary speech. Five seconds is the compromise — steady enough to trust,
-// short enough to still be feedback rather than a report.
-const LIVE_TILT_WINDOW_SECONDS = 5;
-// Start showing a colour once this much speech exists rather than waiting for
-// a full window. The reading is damped for its own length (see liveTension),
-// so an early one is cautious instead of wrong.
-const LIVE_TILT_MIN_SECONDS = 0.4;
-// Emit at most this often, in spectra, so the indicator updates ~10 times a
-// second instead of re-rendering on every measurement.
-const LIVE_TILT_EMIT_EVERY = 12;
-// Dumps every frame's level into the log. Superseded by saved recordings —
-// the frame series now travels in the JSON sidecar next to the WAV, where it
-// costs nothing and sits beside the audio it describes. Left here as a switch
-// for when there is no capture marker and the log is all there is.
-const DUMP_FRAME_SERIES = false;
-// electron-log handles long lines, but a multi-megabyte one helps nobody.
-const FRAME_SERIES_CHUNK = 400;
-
 // Debug logging interval
 let lastRmsLogTime = 0;
 const RMS_LOG_INTERVAL_MS = 500; // Log RMS every 500ms
@@ -140,11 +66,6 @@ const defaultDeps: AudioRecorderDeps = {
 
 export type SilenceStopCallback = () => void;
 export type AudioLevelCallback = (rms: number) => void;
-/** Rolling median spectral tilt during recording, in dB per kHz. */
-export type VoiceTiltCallback = (
-  rollingTiltDbPerKhz: number,
-  windowSeconds: number
-) => void;
 
 export interface AudioRecorderOptions {
   deviceId?: string;
@@ -157,54 +78,6 @@ export interface AudioRecorderOptions {
    * "Gemini direct" mode uses opus.
    */
   retainPcmForWav?: boolean;
-}
-
-/**
- * How loud one recording was, in dBFS (0 dB = full scale, everything is
- * negative). Only frames above SILENCE_THRESHOLD are counted, so pauses
- * between sentences don't drag the numbers down.
- *
- * Absolute values here are mic-dependent and mean little on their own. The
- * useful figures are differences: this recording's `medianDb` against the
- * speaker's usual level, and `spreadDb` inside a single recording.
- */
-export interface LevelStats {
-  /** Typical level. Median, so a cough can't move it. */
-  medianDb: number;
-  /** Loud end: the level exceeded 5% of the time. */
-  peakDb: number;
-  /** Quiet end: the level exceeded 75% of the time. */
-  quietDb: number;
-  /** peakDb − quietDb. */
-  spreadDb: number;
-  /** How many values the percentiles were taken over. */
-  count: number;
-}
-
-export interface LoudnessStats {
-  /**
-   * Raw frames, one per render quantum (~8 ms at 16 kHz). `medianDb` here is a
-   * stable, usable baseline. `spreadDb` is NOT a shouting signal: inside
-   * ordinary speech vowels are loud and consonants quiet, which alone produces
-   * 13–16 dB. Measured, not assumed.
-   */
-  frames: LevelStats;
-  /**
-   * Median slope of the log spectrum in dB per kHz, over 200-6000 Hz, across
-   * the recording's speech. Less negative means a harsher, more strained
-   * voice. Null when the recording held too few spectra to bother.
-   */
-  tiltDbPerKhz: number | null;
-  /** How many spectra the tilt median was taken over. */
-  tiltSamples: number;
-  /**
-   * The same speech averaged over windows of different lengths, keyed by
-   * window duration in milliseconds. Longer windows average syllables away and
-   * leave only sustained level — which is what shouting actually is. Which
-   * length is right is an open question, so several are measured side by side.
-   * A window length that didn't fit in the recording is absent.
-   */
-  windows: Record<number, LevelStats>;
 }
 
 export class AudioRecorder {
@@ -225,30 +98,10 @@ export class AudioRecorder {
   private silenceStartTime: number | null = null;
   private onSilenceStop: SilenceStopCallback | null = null;
   private onAudioLevel: AudioLevelCallback | null = null;
-  private onVoiceTilt: VoiceTiltCallback | null = null;
   private silenceStopFired: boolean = false;
   private options: AudioRecorderOptions;
   private lastSilenceLogTime: number = Number.NEGATIVE_INFINITY;
   private lastSoundLogTime: number = Number.NEGATIVE_INFINITY;
-  // RMS of every frame loud enough to be speech. Silent frames are excluded so
-  // pauses between sentences don't drag the recording's loudness down.
-  private speechFrameRms: number[] = [];
-  // How much audio one worklet frame covers. Derived from the device's real
-  // sample rate on the first frame, because the rate we asked for is not
-  // always the rate we get.
-  private frameDurationMs: number = 0;
-  private loudness: LoudnessStats | null = null;
-  // Snapshotted at stop(), because cleanup() empties speechFrameRms in the
-  // same call and callers read this afterwards.
-  private speechSeconds: number = 0;
-  private deviceLabel: string = '';
-  // Spectral tilt is read off a parallel AnalyserNode rather than computed by
-  // hand: the browser already has an optimised FFT, and a slope needs a real
-  // spectrum, not the 128-sample frames the worklet delivers.
-  private analyserNode: AnalyserNode | null = null;
-  private spectrumDb: Float32Array<ArrayBuffer> | null = null;
-  private tiltSamples: number[] = [];
-  private speechFrameCounter: number = 0;
 
   constructor(deps: AudioRecorderDeps = defaultDeps, options: AudioRecorderOptions = {}) {
     this.deps = deps;
@@ -273,16 +126,6 @@ export class AudioRecorder {
    */
   setOnAudioLevel(callback: AudioLevelCallback | null): void {
     this.onAudioLevel = callback;
-  }
-
-  /**
-   * Set a callback for the rolling spectral tilt during recording — the live
-   * "how harsh does this sound right now" reading. Fires about ten times a
-   * second once enough spectra have accumulated, and not at all on a device
-   * with no analyser.
-   */
-  setOnVoiceTilt(callback: VoiceTiltCallback | null): void {
-    this.onVoiceTilt = callback;
   }
 
   /**
@@ -311,11 +154,7 @@ export class AudioRecorder {
         sampleRate: TARGET_SAMPLE_RATE,
         echoCancellation: true,
         noiseSuppression: true,
-        // Chromium turns auto gain control ON by default, which is precisely
-        // what erases the signal the loudness detector reads: shouting gets
-        // quietly turned down within a second or so. Ask for it off. The
-        // browser may still refuse (some USB mics do gain in hardware), so
-        // the actual state is logged from getSettings() below.
+        // Chromium enables auto gain control by default; it quietly levels out loud and soft speech.
         autoGainControl: false,
       };
 
@@ -341,14 +180,7 @@ export class AudioRecorder {
           channelCount: trackSettings.channelCount,
           echoCancellation: trackSettings.echoCancellation,
           noiseSuppression: trackSettings.noiseSuppression,
-          autoGainControl: trackSettings.autoGainControl,
         });
-        // Surfaced to the main log because every loudness threshold downstream
-        // is meaningless while AGC is on.
-        this.deviceLabel = audioTrack.label;
-        mainLog(
-          `[Loudness] autoGainControl=${trackSettings.autoGainControl} (requested false) on "${audioTrack.label}"`
-        );
       }
 
       // Create audio context
@@ -380,12 +212,6 @@ export class AudioRecorder {
       this.recorderChunks = [];
       this.pcmChunks = [];
       this.wavBase64 = null;
-      this.speechFrameRms = [];
-      this.tiltSamples = [];
-      this.speechFrameCounter = 0;
-      this.frameDurationMs = 0;
-      this.speechSeconds = 0;
-      this.loudness = null;
       this.mediaRecorder = new MediaRecorder(this.mediaStream, {
         mimeType: this.recordedMimeType,
         audioBitsPerSecond: RECORDER_BITRATE,
@@ -423,28 +249,6 @@ export class AudioRecorder {
         const rms = this.calculateRMS(inputData);
         const now = Date.now();
         const recordingDuration = now - this.recordingStartTime;
-
-        // Loudness measurement runs regardless of the silence-detection
-        // setting — it feeds the "are you shouting" check, not auto-stop.
-        if (this.frameDurationMs === 0 && inputData.length > 0 && this.originalSampleRate > 0) {
-          this.frameDurationMs = (inputData.length / this.originalSampleRate) * 1000;
-        }
-        if (rms >= SILENCE_THRESHOLD) {
-          this.speechFrameRms.push(rms);
-          this.speechFrameCounter++;
-          if (
-            this.analyserNode &&
-            this.spectrumDb &&
-            this.speechFrameCounter % TILT_FRAME_STRIDE === 0
-          ) {
-            this.analyserNode.getFloatFrequencyData(this.spectrumDb);
-            const tilt = spectralTilt(this.spectrumDb, this.originalSampleRate / TILT_FFT_SIZE);
-            if (tilt !== null) {
-              this.tiltSamples.push(tilt);
-              this.emitLiveTilt();
-            }
-          }
-        }
 
         // Call audio level callback (normalized RMS, clamped to 0-1)
         // Multiply by ~3 to make typical speech levels more visible (raw RMS is often 0.01-0.1)
@@ -497,18 +301,6 @@ export class AudioRecorder {
         }
       };
 
-      // Parallel analyser for spectral tilt. Guarded because the injected test
-      // AudioContext is a stub without the Web Audio analyser.
-      if (typeof this.audioContext.createAnalyser === 'function') {
-        this.analyserNode = this.audioContext.createAnalyser();
-        this.analyserNode.fftSize = TILT_FFT_SIZE;
-        // No smoothing: we take our own median over the recording, and the
-        // node's default 0.8 would blur transitions into each other first.
-        this.analyserNode.smoothingTimeConstant = 0;
-        this.spectrumDb = new Float32Array(new ArrayBuffer(this.analyserNode.frequencyBinCount * 4));
-        this.sourceNode.connect(this.analyserNode);
-      }
-
       // Connect nodes: source -> worklet -> destination
       this.sourceNode.connect(this.workletNode);
       this.workletNode.connect(this.audioContext.destination);
@@ -546,46 +338,6 @@ export class AudioRecorder {
 
     const recordingDuration = Date.now() - this.recordingStartTime;
     this.isRecording = false;
-
-    // Measure loudness before any early return below, so a rejected recording
-    // still leaves numbers behind to look at.
-    this.speechSeconds = (this.speechFrameRms.length * this.frameDurationMs) / 1000;
-    this.loudness = computeLoudnessStats(
-      this.speechFrameRms,
-      this.frameDurationMs,
-      this.tiltSamples
-    );
-    if (this.loudness) {
-      const f = this.loudness.frames;
-      mainLog(
-        `[Loudness] frame(${this.frameDurationMs.toFixed(1)}ms) median=${f.medianDb.toFixed(1)}dB ` +
-          `peak=${f.peakDb.toFixed(1)}dB quiet=${f.quietDb.toFixed(1)}dB ` +
-          `spread=${f.spreadDb.toFixed(1)}dB n=${f.count} duration=${recordingDuration}ms`
-      );
-      const tilt = this.loudness.tiltDbPerKhz;
-      mainLog(
-        `[Tilt] ${tilt === null ? 'n/a' : `${tilt.toFixed(2)}dB/kHz`} ` +
-          `from ${this.loudness.tiltSamples} spectra`
-      );
-      for (const windowMs of CANDIDATE_WINDOW_MS) {
-        const w = this.loudness.windows[windowMs];
-        if (!w) continue;
-        mainLog(
-          `[Loudness] win${windowMs}ms median=${w.medianDb.toFixed(1)}dB ` +
-            `peak=${w.peakDb.toFixed(1)}dB quiet=${w.quietDb.toFixed(1)}dB ` +
-            `spread=${w.spreadDb.toFixed(1)}dB n=${w.count}`
-        );
-      }
-      if (DUMP_FRAME_SERIES) {
-        const series = this.speechFrameRms.map((r) => rmsToDb(r).toFixed(1));
-        const chunks = Math.ceil(series.length / FRAME_SERIES_CHUNK);
-        const tag = `${this.recordingStartTime}`;
-        for (let i = 0; i < chunks; i++) {
-          const part = series.slice(i * FRAME_SERIES_CHUNK, (i + 1) * FRAME_SERIES_CHUNK);
-          mainLog(`[LoudnessSeries] ${tag} ${i + 1}/${chunks} ${part.join(',')}`);
-        }
-      }
-    }
 
     // Validate recording duration
     if (recordingDuration < MIN_RECORDING_MS) {
@@ -663,47 +415,6 @@ export class AudioRecorder {
   }
 
   /**
-   * Loudness of the most recent recording, or null if it held no speech.
-   * Available after `stop()`.
-   */
-  getLoudnessStats(): LoudnessStats | null {
-    return this.loudness;
-  }
-
-  /** Label of the microphone the last recording came from, e.g. "Default - AirWave". */
-  getDeviceLabel(): string {
-    return this.deviceLabel;
-  }
-
-  /**
-   * Median tilt over the last couple of seconds, pushed to the live callback.
-   * Silent until there are enough spectra for the median to mean anything.
-   */
-  private emitLiveTilt(): void {
-    if (!this.onVoiceTilt) return;
-    const perSample = (TILT_FRAME_STRIDE * this.frameDurationMs) / 1000;
-    if (perSample <= 0) return;
-    if (this.tiltSamples.length * perSample < LIVE_TILT_MIN_SECONDS) return;
-    if (this.tiltSamples.length % LIVE_TILT_EMIT_EVERY !== 0) return;
-    const wanted = Math.ceil(LIVE_TILT_WINDOW_SECONDS / perSample);
-    const window = this.tiltSamples.slice(-wanted);
-    this.onVoiceTilt(quantile(window, 0.5), window.length * perSample);
-  }
-
-  /**
-   * How many seconds of the last recording were actually speech — pauses
-   * between sentences excluded. Zero before the first frame arrives.
-   */
-  getSpeechSeconds(): number {
-    return this.speechSeconds;
-  }
-
-  /** Raw per-frame levels in dBFS of the last recording. Kept for offline analysis. */
-  getFrameSeriesDb(): number[] {
-    return this.speechFrameRms.map(rmsToDb);
-  }
-
-  /**
    * Mime type of the audio produced by the most recent recording, with
    * any `;codecs=...` suffix stripped — Gemini's audio sniffer keys on
    * the bare type.
@@ -762,12 +473,6 @@ export class AudioRecorder {
       this.workletNode = null;
     }
 
-    if (this.analyserNode) {
-      this.analyserNode.disconnect();
-      this.analyserNode = null;
-    }
-    this.spectrumDb = null;
-
     if (this.sourceNode) {
       this.sourceNode.disconnect();
       this.sourceNode = null;
@@ -785,10 +490,6 @@ export class AudioRecorder {
 
     this.recorderChunks = [];
     this.pcmChunks = [];
-    // `loudness` deliberately survives cleanup — callers read it after stop().
-    this.speechFrameRms = [];
-    this.tiltSamples = [];
-    this.speechFrameCounter = 0;
     this.silenceStartTime = null;
     this.silenceStopFired = false;
   }
@@ -803,145 +504,6 @@ function mainLog(message: string): void {
   } else {
     console.log(message);
   }
-}
-
-/**
- * Amplitude to decibels. Silence would be -Infinity, so it is clamped to
- * DB_FLOOR — a number the callers can still do arithmetic on.
- */
-export function rmsToDb(rms: number): number {
-  if (!(rms > 0)) return DB_FLOOR;
-  return Math.max(DB_FLOOR, 20 * Math.log10(rms));
-}
-
-/**
- * Value below which `fraction` of the sorted samples fall (0 = smallest,
- * 1 = largest). Interpolates between neighbours.
- */
-export function quantile(values: number[], fraction: number): number {
-  if (values.length === 0) return NaN;
-  const sorted = [...values].sort((a, b) => a - b);
-  if (sorted.length === 1) return sorted[0];
-  const position = Math.min(Math.max(fraction, 0), 1) * (sorted.length - 1);
-  const lower = Math.floor(position);
-  const upper = Math.ceil(position);
-  if (lower === upper) return sorted[lower];
-  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
-}
-
-/**
- * Slope of a log-magnitude spectrum against frequency, in dB per kHz, fitted
- * by least squares over [minHz, maxHz].
- *
- * Because it is a slope, any constant gain applied to the whole spectrum
- * cancels out — which is the entire point: a microphone that levels loudness
- * in hardware still cannot hide a change in the shape of the spectrum.
- *
- * `spectrumDb[i]` is the level of the bin centred on `i * binHz`. Bins at
- * digital silence carry no information and are skipped; with fewer than three
- * usable bins there is no line to fit and the result is null.
- */
-export function spectralTilt(
-  spectrumDb: Float32Array | number[],
-  binHz: number,
-  minHz: number = TILT_MIN_HZ,
-  maxHz: number = TILT_MAX_HZ
-): number | null {
-  if (binHz <= 0) return null;
-  const first = Math.max(1, Math.ceil(minHz / binHz));
-  const last = Math.min(spectrumDb.length - 1, Math.floor(maxHz / binHz));
-  if (last - first < 2) return null;
-
-  let n = 0;
-  let sumF = 0;
-  let sumD = 0;
-  for (let i = first; i <= last; i++) {
-    const d = spectrumDb[i];
-    if (!Number.isFinite(d)) continue;
-    n++;
-    sumF += (i * binHz) / 1000;
-    sumD += d;
-  }
-  if (n < 3) return null;
-
-  const meanF = sumF / n;
-  const meanD = sumD / n;
-  let num = 0;
-  let den = 0;
-  for (let i = first; i <= last; i++) {
-    const d = spectrumDb[i];
-    if (!Number.isFinite(d)) continue;
-    const fc = (i * binHz) / 1000 - meanF;
-    num += fc * (d - meanD);
-    den += fc * fc;
-  }
-  if (den === 0) return null;
-  return num / den;
-}
-
-/** Percentile summary of a list of amplitudes. */
-export function summariseLevels(rmsValues: number[]): LevelStats {
-  const db = rmsValues.map(rmsToDb);
-  const medianDb = quantile(db, 0.5);
-  const peakDb = quantile(db, 0.95);
-  const quietDb = quantile(db, 0.25);
-  return { medianDb, peakDb, quietDb, spreadDb: peakDb - quietDb, count: db.length };
-}
-
-/**
- * Chunk consecutive frames into windows and return each window's RMS.
- *
- * Energy is what averages correctly, not amplitude, so the mean is taken over
- * the squares and the square root applied at the end. A trailing chunk shorter
- * than the window is dropped — a partial window reads quieter than it was.
- */
-export function windowRms(frameRms: number[], framesPerWindow: number): number[] {
-  if (framesPerWindow < 1) return [];
-  const out: number[] = [];
-  for (let start = 0; start + framesPerWindow <= frameRms.length; start += framesPerWindow) {
-    let energy = 0;
-    for (let i = start; i < start + framesPerWindow; i++) {
-      energy += frameRms[i] * frameRms[i];
-    }
-    out.push(Math.sqrt(energy / framesPerWindow));
-  }
-  return out;
-}
-
-/**
- * Summarise a recording's speech frames, both raw and averaged over each
- * candidate window length. Returns null when there was too little speech to
- * say anything — a recording of pure silence has no loudness.
- *
- * `frameDurationMs` is how much audio one frame covers; it comes from the
- * device's actual sample rate, which is not always the one we asked for.
- */
-export function computeLoudnessStats(
-  speechFrameRms: number[],
-  frameDurationMs: number,
-  tiltSamples: number[] = []
-): LoudnessStats | null {
-  if (speechFrameRms.length < MIN_SPEECH_FRAMES_FOR_LOUDNESS) return null;
-
-  const windows: Record<number, LevelStats> = {};
-  if (frameDurationMs > 0) {
-    for (const windowMs of CANDIDATE_WINDOW_MS) {
-      const framesPerWindow = Math.max(1, Math.round(windowMs / frameDurationMs));
-      const levels = windowRms(speechFrameRms, framesPerWindow);
-      // Percentiles over one or two windows are theatre, not measurement.
-      if (levels.length >= MIN_WINDOWS_FOR_STATS) {
-        windows[windowMs] = summariseLevels(levels);
-      }
-    }
-  }
-
-  return {
-    frames: summariseLevels(speechFrameRms),
-    tiltDbPerKhz:
-      tiltSamples.length >= MIN_TILT_SAMPLES ? quantile(tiltSamples, 0.5) : null,
-    tiltSamples: tiltSamples.length,
-    windows,
-  };
 }
 
 function buildWavBase64FromPcm(
@@ -1024,4 +586,4 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 // Export utility functions for testing
-export { TARGET_SAMPLE_RATE, CHANNELS, BITS_PER_SAMPLE, MIN_RECORDING_MS, MAX_RECORDING_MS, SILENCE_THRESHOLD, DEFAULT_SILENCE_DURATION_MS, SILENCE_STATE_LOG_DEBOUNCE_MS, DB_FLOOR, MIN_SPEECH_FRAMES_FOR_LOUDNESS };
+export { TARGET_SAMPLE_RATE, CHANNELS, BITS_PER_SAMPLE, MIN_RECORDING_MS, MAX_RECORDING_MS, SILENCE_THRESHOLD, DEFAULT_SILENCE_DURATION_MS, SILENCE_STATE_LOG_DEBOUNCE_MS };

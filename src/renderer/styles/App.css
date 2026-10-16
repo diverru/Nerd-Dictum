@@ -139,19 +139,9 @@
 }
 
 .mic-button.recording {
-  background: #f44336;
+  background: var(--color-recording, #4caf50);
   color: #1a1a1a;
   animation: pulse 1.5s ease-in-out infinite;
-}
-
-/* Recording, but the voice baseline is not built yet, so there is nothing to
-   report about the tone. Grey says that; red would read as "you are shouting"
-   before anything has been measured. The pulse and the level ring still show
-   that recording is live. */
-.mic-button.recording.no-signal {
-  background: var(--color-mic-idle, #3a3a3a);
-  color: var(--text-primary, #e0e0e0);
-  --mic-glow-rgb: 120, 120, 120;
 }
 
 .mic-button.transcribing {
@@ -217,16 +207,12 @@
   }
 }
 
-/* The glow follows the button. While recording, the microphone is tinted by
-   how tense the voice sounds, and a hardcoded red halo around a green button
-   would read as a rendering bug. The fallback is the red it has always been,
-   for when there is no baseline to tint it with. */
 @keyframes pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(var(--mic-glow-rgb, 244, 67, 54), 0.4);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-recording, #4caf50) 40%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 15px rgba(var(--mic-glow-rgb, 244, 67, 54), 0);
+    box-shadow: 0 0 0 15px transparent;
   }
 }
 
