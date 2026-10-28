@@ -1,0 +1,106 @@
+/* The strip sizes itself from the window, so its host must fill it */
+.strip-host {
+  width: 100%;
+  height: 100%;
+}
+
+/* Housing: never changes colour */
+.minimal-strip {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 3px;
+  display: flex;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(22, 22, 24, 0.92);
+  cursor: grab;
+}
+
+.minimal-strip:active {
+  cursor: grabbing;
+}
+
+.minimal-strip:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Recessed screen: carries every state */
+.strip-screen {
+  position: relative;
+  flex: 1;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0c0c0d;
+}
+
+.strip-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, #4caf50 0%, #4caf50 74%, #ff9800 88%, #f44336 100%);
+  clip-path: inset(calc(100% - var(--level, 0%)) 0 0 0);
+  transition: clip-path 110ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Standby light, like the power LED on hardware */
+.minimal-strip.idle .strip-fill {
+  --level: 4%;
+  opacity: 0.5;
+}
+
+.minimal-strip.transcribing .strip-fill,
+.minimal-strip.polishing .strip-fill,
+.minimal-strip.success .strip-fill,
+.minimal-strip.error .strip-fill {
+  display: none;
+}
+
+/* Fades back to idle after success */
+.minimal-strip.idle .strip-screen {
+  transition: background 400ms ease-out;
+}
+
+.minimal-strip.transcribing .strip-screen {
+  background: var(--color-transcribing, #ff9800);
+}
+
+.minimal-strip.polishing .strip-screen {
+  background: var(--color-polishing, #4a9eff);
+}
+
+.minimal-strip.success .strip-screen {
+  background: var(--color-success, #4caf50);
+}
+
+.minimal-strip.error .strip-screen {
+  background: var(--color-error, #f44336);
+}
+
+.minimal-strip.transcribing .strip-screen::after,
+.minimal-strip.polishing .strip-screen::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 28px;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: strip-sheen 1.2s linear infinite;
+}
+
+.minimal-strip.polishing .strip-screen::after {
+  animation-duration: 1.8s;
+}
+
+@keyframes strip-sheen {
+  from { transform: translateY(100px); }
+  to { transform: translateY(-28px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* A stopped sheen would sit at the screen edge as a pale blotch */
+  .minimal-strip.transcribing .strip-screen::after,
+  .minimal-strip.polishing .strip-screen::after {
+    display: none;
+  }
+}

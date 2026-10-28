@@ -34,6 +34,8 @@ export interface AppSettings {
   soundEnabled: boolean;
   hotkey: string;
   widgetHidden: boolean;
+  // 'full' = the 80x100 widget with buttons. 'minimal' = a 22x108 vertical mixer-style strip.
+  widgetStyle: 'full' | 'minimal';
   holdToRecordEnabled: boolean;
   holdToRecordKey: HoldToRecordKey;
   autoPasteEnabled: boolean;

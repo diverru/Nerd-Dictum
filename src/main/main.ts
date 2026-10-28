@@ -401,6 +401,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   soundEnabled: true,
   hotkey: DEFAULT_HOTKEY,
   widgetHidden: false,
+  widgetStyle: 'full',
   holdToRecordEnabled: true,
   holdToRecordKey: 'LeftAlt',
   autoPasteEnabled: false,
@@ -835,18 +836,52 @@ function createErrorDetailWindow() {
   });
 }
 
+function widgetSize(style: AppSettings['widgetStyle']) {
+  return style === 'minimal' ? { width: 22, height: 130 } : { width: 80, height: 100 };
+}
+
+// Resize the widget window to the new look, keeping its position
+function applyWidgetStyle(style: AppSettings['widgetStyle']) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const [x, y] = mainWindow.getPosition();
+  mainWindow.setBounds({ x, y, ...widgetSize(style) });
+  mainWindow.webContents.send('widget-style-change', style);
+}
+
+// Everything the quit paths share: stop tray/window callbacks from keeping the app alive
+function prepareToQuit() {
+  (app as any).isQuitting = true;
+  // Destroy tray first to prevent menu callbacks
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  // Close all windows explicitly
+  BrowserWindow.getAllWindows().forEach(win => win.destroy());
+}
+
+function quitApp() {
+  prepareToQuit();
+  app.quit();
+}
+
 function createWindow() {
   // Try to restore saved window position
   const savedPosition = loadWindowPosition();
 
+  const size = widgetSize(appSettings.widgetStyle);
+
   mainWindow = new BrowserWindow({
-    width: 80,
-    height: 100,
+    width: size.width,
+    height: size.height,
     ...(savedPosition && { x: savedPosition.x, y: savedPosition.y }),
     frame: false,
-    transparent: false,
-    backgroundColor: '#2a2a2a',
+    // Transparent so the minimal strip can have rounded corners; the full look is painted by the page body
+    transparent: true,
+    backgroundColor: '#00000000',
     alwaysOnTop: true,
+    // macOS clamps y=0 to y=30 unless the window may be larger than the screen
+    enableLargerThanScreen: true,
     resizable: false,
     skipTaskbar: true,
     hasShadow: false,
@@ -856,6 +891,9 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  // The screen-saver level draws the window above the macOS menu bar
+  mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
   // macOS: ensure window stays visible on all Spaces
   if (process.platform === 'darwin') {
@@ -1097,19 +1135,7 @@ function updateTrayMenu() {
     { type: 'separator' },
     {
       label: 'Quit',
-      click: () => {
-        (app as any).isQuitting = true;
-        // Destroy tray first to prevent menu callbacks
-        if (tray) {
-          tray.destroy();
-          tray = null;
-        }
-        // Close all windows explicitly
-        BrowserWindow.getAllWindows().forEach(win => {
-          win.destroy();
-        });
-        app.quit();
-      },
+      click: quitApp,
     },
   ]);
 
@@ -1437,16 +1463,7 @@ function setupAutoUpdater() {
       if (result.response === 0) {
         log('[AutoUpdater] User clicked Restart Now, initiating quit and install...');
 
-        (app as any).isQuitting = true;
-
-        // Destroy tray to prevent menu callbacks
-        if (tray) {
-          tray.destroy();
-          tray = null;
-        }
-
-        // Close all windows
-        BrowserWindow.getAllWindows().forEach(win => win.destroy());
+        prepareToQuit();
 
         // Force quit after 5 seconds if quitAndInstall doesn't work
         const forceQuitTimeout = setTimeout(() => {
@@ -1897,6 +1914,7 @@ ipcMain.handle('get-settings', () => {
     clarificationEnabled: appSettings.clarificationEnabled,
     previousTranscriptContextEnabled: appSettings.previousTranscriptContextEnabled,
     hotkey: appSettings.hotkey || DEFAULT_HOTKEY,
+    widgetStyle: appSettings.widgetStyle,
     holdToRecordEnabled: appSettings.holdToRecordEnabled,
     holdToRecordKey: appSettings.holdToRecordKey,
     autoPasteEnabled: appSettings.autoPasteEnabled,
@@ -1910,6 +1928,7 @@ ipcMain.handle('get-settings', () => {
 ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
   const oldHotkey = appSettings.hotkey;
   const oldWidgetHidden = appSettings.widgetHidden;
+  const oldWidgetStyle = appSettings.widgetStyle;
   const oldHoldToRecordEnabled = appSettings.holdToRecordEnabled;
   const oldHoldToRecordKey = appSettings.holdToRecordKey;
   appSettings = { ...appSettings, ...settings };
@@ -1953,7 +1972,47 @@ ipcMain.handle('save-settings', (_event, settings: Partial<AppSettings>) => {
     }
   }
 
+  if (settings.widgetStyle !== undefined && settings.widgetStyle !== oldWidgetStyle) {
+    applyWidgetStyle(settings.widgetStyle);
+  }
+
   return result;
+});
+
+// The strip is dragged from the renderer with pointer events (a -webkit-app-region
+// drag area would swallow the right click), so the window is moved from here.
+let widgetDragOrigin: [number, number] | null = null;
+
+ipcMain.on('widget-drag-start', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  widgetDragOrigin = mainWindow.getPosition() as [number, number];
+});
+
+ipcMain.on('widget-drag-move', (_event, dx: number, dy: number) => {
+  if (!mainWindow || mainWindow.isDestroyed() || !widgetDragOrigin) return;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+  mainWindow.setPosition(Math.round(widgetDragOrigin[0] + dx), Math.round(widgetDragOrigin[1] + dy));
+});
+
+ipcMain.on('show-widget-menu', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const nextStyle = appSettings.widgetStyle === 'minimal' ? 'full' : 'minimal';
+  Menu.buildFromTemplate([
+    { label: 'Settings', click: () => createSettingsWindow() },
+    { label: 'Statistics', click: () => createStatsWindow() },
+    { type: 'separator' },
+    {
+      label: nextStyle === 'full' ? 'Full view' : 'Minimal strip',
+      click: () => {
+        appSettings.widgetStyle = nextStyle;
+        saveSettings(appSettings);
+        applyWidgetStyle(nextStyle);
+      },
+    },
+    { type: 'separator' },
+    { label: 'Hide widget', click: () => mainWindow?.hide() },
+    { label: 'Quit', click: quitApp },
+  ]).popup({ window: mainWindow });
 });
 
 // Open settings window

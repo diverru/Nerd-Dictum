@@ -33,6 +33,10 @@ export interface ElectronAPI {
     | { ok: false; error: string }
   >;
   onParakeetStatusChange?: (callback: (status: { state: string; error?: string; loadDurationMs?: number }) => void) => () => void;
+  onWidgetStyleChange?: (callback: (style: 'full' | 'minimal') => void) => () => void;
+  showWidgetMenu?: () => void;
+  widgetDragStart?: () => void;
+  widgetDragMove?: (dx: number, dy: number) => void;
   getApiKey: () => Promise<string>;
   getModel: () => Promise<string>;
   onToggleRecording: (callback: () => void) => () => void;

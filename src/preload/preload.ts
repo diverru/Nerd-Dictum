@@ -18,6 +18,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('parakeet-status-change', listener);
     };
   },
+  onWidgetStyleChange: (callback: (style: 'full' | 'minimal') => void) => {
+    const listener = (_event: unknown, style: 'full' | 'minimal') => callback(style);
+    ipcRenderer.on('widget-style-change', listener);
+    return () => {
+      ipcRenderer.removeListener('widget-style-change', listener);
+    };
+  },
+  showWidgetMenu: () => ipcRenderer.send('show-widget-menu'),
+  widgetDragStart: () => ipcRenderer.send('widget-drag-start'),
+  widgetDragMove: (dx: number, dy: number) => ipcRenderer.send('widget-drag-move', dx, dy),
   getApiKey: () => ipcRenderer.invoke('get-api-key'),
   getModel: () => ipcRenderer.invoke('get-model'),
   onToggleRecording: (callback: () => void) => {

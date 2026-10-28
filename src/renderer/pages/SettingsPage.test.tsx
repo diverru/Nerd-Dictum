@@ -249,6 +249,30 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
     expect(screen.getByText('Unsaved Changes')).toBeTruthy();
   });
 
+  it('should detect changes to the widget look and save it', async () => {
+    const mockAPI = createMockElectronAPI();
+    renderSettingsPage(mockAPI);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Loading...')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Appearance' }));
+    const checkbox = screen.getByLabelText('Minimal widget') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('Unsaved Changes')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stay' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(mockAPI.saveSettings).toHaveBeenCalled();
+    });
+    expect(mockAPI.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ widgetStyle: 'minimal' }));
+  });
+
   it('should detect changes to language selection', async () => {
     const mockAPI = createMockElectronAPI();
     renderSettingsPage(mockAPI);

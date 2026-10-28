@@ -145,6 +145,7 @@ export function SettingsPage() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);
   const [widgetHidden, setWidgetHidden] = useState(false);
+  const [widgetStyle, setWidgetStyle] = useState<'full' | 'minimal'>('full');
   const [holdToRecordEnabled, setHoldToRecordEnabled] = useState(true);
   const [holdToRecordKey, setHoldToRecordKey] = useState<HoldToRecordKey>('LeftAlt');
   const [autoPasteEnabled, setAutoPasteEnabled] = useState(false);
@@ -184,6 +185,7 @@ export function SettingsPage() {
     soundEnabled: boolean;
     hotkey: string;
     widgetHidden: boolean;
+    widgetStyle: 'full' | 'minimal';
     holdToRecordEnabled: boolean;
     holdToRecordKey: HoldToRecordKey;
     autoPasteEnabled: boolean;
@@ -219,6 +221,7 @@ export function SettingsPage() {
       soundEnabled !== initial.soundEnabled ||
       hotkey !== initial.hotkey ||
       widgetHidden !== initial.widgetHidden ||
+      widgetStyle !== initial.widgetStyle ||
       holdToRecordEnabled !== initial.holdToRecordEnabled ||
       holdToRecordKey !== initial.holdToRecordKey ||
       autoPasteEnabled !== initial.autoPasteEnabled ||
@@ -243,6 +246,7 @@ export function SettingsPage() {
     soundEnabled,
     hotkey,
     widgetHidden,
+    widgetStyle,
     holdToRecordEnabled,
     holdToRecordKey,
     autoPasteEnabled,
@@ -271,6 +275,14 @@ export function SettingsPage() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // The widget's right-click menu can switch the look while this window is open.
+  useEffect(() => {
+    return window.electronAPI.onWidgetStyleChange?.((style) => {
+      if (initialSettingsRef.current) initialSettingsRef.current.widgetStyle = style;
+      setWidgetStyle(style);
+    });
   }, []);
 
   // Subscribe to Parakeet load/transcribe state changes so the UI reflects
@@ -329,6 +341,7 @@ export function SettingsPage() {
         const loadedSoundEnabled = settings.soundEnabled ?? true;
         const loadedHotkey = settings.hotkey || DEFAULT_HOTKEY;
         const loadedWidgetHidden = settings.widgetHidden ?? false;
+        const loadedWidgetStyle = settings.widgetStyle === 'minimal' ? 'minimal' : 'full';
         const loadedHoldToRecordEnabled = settings.holdToRecordEnabled ?? true;
         const loadedHoldToRecordKey = (settings.holdToRecordKey as HoldToRecordKey) || 'LeftAlt';
         const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? false;
@@ -377,6 +390,7 @@ export function SettingsPage() {
           soundEnabled: loadedSoundEnabled,
           hotkey: loadedHotkey,
           widgetHidden: loadedWidgetHidden,
+          widgetStyle: loadedWidgetStyle,
           holdToRecordEnabled: loadedHoldToRecordEnabled,
           holdToRecordKey: loadedHoldToRecordKey,
           autoPasteEnabled: loadedAutoPasteEnabled,
@@ -472,6 +486,7 @@ export function SettingsPage() {
         soundEnabled,
         hotkey,
         widgetHidden,
+        widgetStyle,
         holdToRecordEnabled,
         holdToRecordKey,
         autoPasteEnabled,
@@ -498,6 +513,7 @@ export function SettingsPage() {
           soundEnabled,
           hotkey,
           widgetHidden,
+          widgetStyle,
           holdToRecordEnabled,
           holdToRecordKey,
           autoPasteEnabled,
@@ -1165,6 +1181,20 @@ export function SettingsPage() {
                 ))}
               </div>
               <span className="settings-hint">System follows your OS appearance.</span>
+            </div>
+
+            <div className="settings-field">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={widgetStyle === 'minimal'}
+                  onChange={(e) => setWidgetStyle(e.target.checked ? 'minimal' : 'full')}
+                />
+                <span>Minimal widget</span>
+              </label>
+              <span className="settings-hint">
+                A thin vertical strip that shows status by colour and the live audio level.
+              </span>
             </div>
           </>
         )}

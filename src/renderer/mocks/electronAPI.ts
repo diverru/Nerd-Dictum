@@ -20,6 +20,7 @@ const defaultSettings: AppSettings = {
   soundEnabled: true,
   hotkey: 'CommandOrControl+Shift+R',
   widgetHidden: false,
+  widgetStyle: 'full',
   holdToRecordEnabled: true,
   holdToRecordKey: 'RightMeta',
   autoPasteEnabled: false,
@@ -66,6 +67,11 @@ export function setupElectronAPIMock() {
         console.error('[Mock] Failed to copy to clipboard:', err);
         return false;
       }
+    },
+
+    onWidgetStyleChange: (_callback: (style: 'full' | 'minimal') => void): (() => void) => {
+      // No-op for browser mock - the window cannot be resized in a browser
+      return () => {};
     },
 
     getApiKey: async (): Promise<string> => {

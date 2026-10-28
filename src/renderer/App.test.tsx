@@ -72,6 +72,7 @@ const defaultSettings = {
   soundEnabled: true,
   hotkey: 'CommandOrControl+Shift+R',
   widgetHidden: false,
+  widgetStyle: 'full' as const,
   holdToRecordEnabled: false,
   holdToRecordKey: 'RightMeta' as const,
   autoPasteEnabled: false,

@@ -10,6 +10,7 @@ import { InfoButton } from './components/InfoButton';
 import { HideButton } from './components/HideButton';
 import { StatsButton } from './components/StatsButton';
 import { AudioLevelRing } from './components/AudioLevelRing';
+import { MinimalStrip } from './components/MinimalStrip';
 import type { AppSettings } from './types/electron';
 
 const MESSAGE_TIMEOUT_MS = 2000;
@@ -141,6 +142,7 @@ export function App() {
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [appVersion, setAppVersion] = useState<string>('');
   const [hotkey, setHotkey] = useState<string>('CommandOrControl+Shift+R');
+  const [widgetStyle, setWidgetStyle] = useState<AppSettings['widgetStyle'] | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const audioLevelRef = useRef<number>(0); // For lerp smoothing
   const recorderRef = useRef<AudioRecorder | null>(null);
@@ -628,6 +630,13 @@ export function App() {
 
   const widgetRef = useRef<HTMLDivElement>(null);
 
+  // Minimal strip drag: pointer events, because a -webkit-app-region drag area swallows the right click
+  const stripDragRef = useRef<{ x: number; y: number } | null>(null);
+  const endStripDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    stripDragRef.current = null;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+
   const handleToggleRecording = useCallback(async () => {
     if (state === 'idle' || state === 'success') {
       await startRecording();
@@ -712,8 +721,16 @@ export function App() {
   useEffect(() => {
     window.electronAPI.getSettings().then((settings) => {
       setHotkey(settings.hotkey || 'CommandOrControl+Shift+R');
-    });
+      setWidgetStyle(settings.widgetStyle === 'minimal' ? 'minimal' : 'full');
+    }).catch(() => setWidgetStyle('full'));
+    return window.electronAPI.onWidgetStyleChange?.(setWidgetStyle);
   }, []);
+
+  // The minimal strip needs a transparent page behind its rounded corners
+  useEffect(() => {
+    document.documentElement.classList.toggle('minimal-widget', widgetStyle === 'minimal');
+    return () => document.documentElement.classList.remove('minimal-widget');
+  }, [widgetStyle]);
 
   // Native DOM drag-and-drop handlers on the widget element.
   // Using native listeners (not React) because Electron's default drag-and-drop
@@ -786,7 +803,7 @@ export function App() {
       document.removeEventListener('dragover', preventNavigation);
       document.removeEventListener('drop', preventNavigation);
     };
-  }, [handleFileDrop]);
+  }, [handleFileDrop, widgetStyle]);
 
   // Cleanup recorder on unmount or window close to release microphone
   useEffect(() => {
@@ -803,6 +820,35 @@ export function App() {
       cleanup();
     };
   }, []);
+
+  // Render nothing until the look is known, so the narrow window never shows a clipped full widget
+  if (widgetStyle === null) return null;
+
+  if (widgetStyle === 'minimal') {
+    return (
+      <div
+        className="strip-host"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          window.electronAPI.showWidgetMenu?.();
+        }}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          stripDragRef.current = { x: e.screenX, y: e.screenY };
+          window.electronAPI.widgetDragStart?.();
+        }}
+        onPointerMove={(e) => {
+          const start = stripDragRef.current;
+          if (start) window.electronAPI.widgetDragMove?.(e.screenX - start.x, e.screenY - start.y);
+        }}
+        onPointerUp={endStripDrag}
+        onPointerCancel={endStripDrag}
+      >
+        <MinimalStrip state={message?.type === 'error' ? 'error' : state} level={audioLevel} />
+      </div>
+    );
+  }
 
   return (
     <div
