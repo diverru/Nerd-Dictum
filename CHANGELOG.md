@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-29 (diverru fork)
+
+[2026-10-29] Removed — Auto-paste no longer restores the previous clipboard. It used to snapshot the clipboard, write the transcript, press Cmd+V and put the snapshot back 250 ms later; an app that handled the keystroke after that window pasted the old content instead of the transcript. The transcript now simply stays in the clipboard.
+
 ## 2026-10-16 (diverru fork)
 
 [2026-10-16] STT — Two transcription modes instead of three: `cloud` and `local`. `cloud` sends the audio to the provider chosen in Settings (`cloudProvider`: Google Gemini or OpenAI) and pastes what comes back; there is no polish step and no Parakeet fallback, a failed request surfaces as an error. `local` is Parakeet TDT v3, offline. Parakeet is now loaded only in `local` mode, and is stopped when the mode is switched away from it. Settings written by older versions are migrated on load (`gemini` to `cloud` + Google, `local-then-gemini` to `cloud` + OpenAI with the model set to `gpt-transcribe`, `local-only` to `local`); stored API keys are kept.
