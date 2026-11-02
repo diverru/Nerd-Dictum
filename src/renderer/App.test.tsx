@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { App } from './App';
+import { CloudRequestService } from '../main/cloud-requests';
 import { resetSharedAudioGraph } from '../lib/audio';
+
+const cloudService = new CloudRequestService(() => {});
 
 // The App listens for `devicechange` on navigator.mediaDevices
 const deviceEventStubs = { addEventListener: () => {}, removeEventListener: () => {} };
@@ -99,6 +102,8 @@ const defaultSettings = {
  * Use overrides parameter to customize specific methods for individual tests.
  */
 const createMockElectronAPI = (overrides: Partial<typeof window.electronAPI> = {}) => ({
+  cloudRequest: mock((id: string, request: import('../shared/cloud-requests').CloudRequest) => cloudService.run(1, id, request)),
+  cancelCloudRequest: mock((id: string) => cloudService.cancel(1, id)),
   getApiKey: mock(() => Promise.resolve('test-api-key')),
   getModel: mock(() => Promise.resolve('gemini-3-flash-preview')),
   copyToClipboard: mock(() => Promise.resolve(true)),
@@ -927,6 +932,22 @@ describe('App', () => {
       const sentWav = Buffer.from(transcribeLocalStt.mock.calls[0][0], 'base64');
       expect(sentWav.toString('ascii', 0, 4)).toBe('RIFF');
       expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe('local retry text');
+    });
+
+    it('routes cloud dictation through IPC without calling renderer fetch', async () => {
+      const fetchMock = mock(() => Promise.reject(new Error('Renderer must not send cloud requests')));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const cloudRequest = mock(async () => ({ ok: true as const, text: 'from main process' }));
+      const copyToClipboard = mock(() => Promise.resolve(true));
+      const retry = await mountWithRetryHook({
+        cloudRequest, copyToClipboard,
+        readFileAsBase64: mock(() => Promise.resolve(savedAudioBase64)),
+      });
+      await act(async () => { retry('/mock/recording.webm'); });
+      await waitFor(() => expect(copyToClipboard).toHaveBeenCalled());
+      expect(cloudRequest).toHaveBeenCalledTimes(1);
+      expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe('from main process');
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('retries a saved recording through OpenAI when the mode was switched to it', async () => {

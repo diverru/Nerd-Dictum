@@ -20,6 +20,8 @@ export interface SavedRecording {
 }
 
 export interface ElectronAPI {
+  cloudRequest: (id: string, request: import('../../shared/cloud-requests').CloudRequest) => Promise<import('../../shared/cloud-requests').CloudResult>;
+  cancelCloudRequest: (id: string) => void;
   copyToClipboard: (text: string, autoPaste?: boolean) => Promise<boolean>;
   log?: (message: string) => void;
   listGeminiModels?: () => Promise<

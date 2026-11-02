@@ -2,6 +2,7 @@
  * Mock implementation of electronAPI for browser development.
  * This allows the UI to be developed and tested without Electron.
  */
+import { CloudRequestService } from '../../main/cloud-requests';
 import type { AppSettings, MicrophonePermissionStatus, StatsWithDerived, ErrorDetail, SavedRecording } from '../types/electron';
 import { DEFAULT_TRANSCRIPTION_PROMPT } from '../../lib/openai-stt';
 import { DEFAULT_POLISH_MODEL, DEFAULT_POLISH_PROMPT, DEFAULT_POLISH_MIN_CHARS } from '../../lib/polish';
@@ -64,7 +65,11 @@ export function setupElectronAPIMock() {
 
   console.log('[Mock] Setting up electronAPI mock for browser development');
 
+  // Browser-only development uses the same handlers without Electron IPC.
+  const cloudService = new CloudRequestService(console.log);
   window.electronAPI = {
+    cloudRequest: (id, request) => cloudService.run(1, id, request),
+    cancelCloudRequest: (id) => cloudService.cancel(1, id),
     copyToClipboard: async (text: string, _autoPaste?: boolean): Promise<boolean> => {
       try {
         await navigator.clipboard.writeText(text);

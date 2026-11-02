@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-02 (diverru fork)
+
+[2026-11-02] Network — Cloud transcription (Gemini/OpenAI) and OpenAI polish now run in the main process through its shared Node HTTP pool. Idle connections are retained for up to 10 minutes, with TCP keepalive probes starting after 30 seconds; servers may close them earlier. Cancellation and API error details are preserved across IPC. No periodic API requests are sent. Verify with `bun test src/main/cloud-requests.test.ts src/main/provider-network.test.ts src/renderer/App.test.tsx`; manually check both providers, cancellation, and OpenAI polish after restarting the app.
+
 ## 2026-10-29 (diverru fork)
 
 [2026-10-29] Removed — Auto-paste no longer restores the previous clipboard. It used to snapshot the clipboard, write the transcript, press Cmd+V and put the snapshot back 250 ms later; an app that handled the keystroke after that window pasted the old content instead of the transcript. The transcript now simply stays in the clipboard, and `clipboard-snapshot.ts` is gone.

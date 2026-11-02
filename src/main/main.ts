@@ -61,24 +61,27 @@ function log(...args: unknown[]): void {
   electronLog.info(...args);
 }
 
-// Configure undici (Node's built-in HTTP client used by global fetch) with a
-// keep-alive pool and aggressive timeouts. Without this, idle connections
-// silently rot in the pool (intermediary kills them after a few minutes)
-// and the next fetch hangs on a dead socket for ~10s before timing out.
-// Keep-alive + short connect/headers timeouts means we either get a fresh
-// healthy connection fast, or fail fast and let the caller retry.
-import { Agent, setGlobalDispatcher } from 'undici';
-setGlobalDispatcher(
-  new Agent({
-    keepAliveTimeout: 30_000,        // recycle idle conns after 30s
-    keepAliveMaxTimeout: 300_000,    // hard cap so very old conns get rotated
-    connect: { timeout: 3_000 },     // TCP + TLS handshake budget
-    headersTimeout: 5_000,           // wait at most 5s for response headers
-    bodyTimeout: 60_000,             // long enough for a slow LLM stream
-    pipelining: 1,
-  }),
-);
-log('[net] undici Agent configured: keep-alive, 3s connect / 5s headers / 60s body');
+// Cloud STT, polish and model-list requests share this process's Node fetch pool.
+import { configureProviderNetwork } from './provider-network';
+import { CloudRequestService } from './cloud-requests';
+import type { CloudRequest } from '../shared/cloud-requests';
+configureProviderNetwork();
+log('[net] undici Agent configured: up to 10m idle keep-alive, TCP probes after 30s');
+
+const cloudRequests = new CloudRequestService(log);
+const cloudOwners = new WeakSet<Electron.WebContents>();
+ipcMain.handle('cloud-request', (event, id: string, request: CloudRequest) => {
+  if (typeof id !== 'string' || !request || !['google', 'openai', 'polish'].includes(request.kind)) {
+    throw new Error('Invalid cloud request');
+  }
+  if (!cloudOwners.has(event.sender)) {
+    cloudOwners.add(event.sender);
+    const owner = event.sender.id;
+    event.sender.once('destroyed', () => cloudRequests.cancelAll(owner));
+  }
+  return cloudRequests.run(event.sender.id, id, request);
+});
+ipcMain.on('cancel-cloud-request', (event, id: string) => cloudRequests.cancel(event.sender.id, id));
 
 // Wrap globalThis.fetch so we can see every outgoing HTTP call that a library
 // in main makes — useful when a request is slow and we want to know whether

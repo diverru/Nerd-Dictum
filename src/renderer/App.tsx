@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import './styles/App.css';
 import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS, decodeToWavBase64 } from '../lib/audio';
-import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
-import { polishTranscript, isPolishActive, type PolishOptions } from '../lib/polish';
-import { transcribeWithOpenAI, DEFAULT_OPENAI_MODEL, OPENAI_MAX_UPLOAD_BYTES } from '../lib/openai-stt';
+import { TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
+import { isPolishActive, type PolishOptions } from '../lib/polish';
+import { DEFAULT_OPENAI_MODEL, OPENAI_MAX_UPLOAD_BYTES } from '../lib/openai-stt';
+import { requestCloud } from './cloud-client';
 import { classifyError, ClassifiedError } from '../lib/errors';
 import { playStartSound, playSuccessSound, playErrorSound } from '../lib/sounds';
 import { SettingsButton } from './components/Settings';
@@ -288,24 +289,23 @@ export function App() {
       } else if (settings.cloudProvider === 'openai') {
         // Prefer the 16 kHz WAV; a retry or a dropped file only has the original audio.
         const useWav = !!wavBase64 && wavBase64.length * 0.75 < OPENAI_MAX_UPLOAD_BYTES;
-        transcript = await transcribeWithOpenAI(
-          useWav ? wavBase64 : audioBase64,
-          cloudKey as string,
-          openaiConfig?.model || DEFAULT_OPENAI_MODEL,
-          {
+        transcript = await requestCloud({
+          kind: 'openai',
+          audioBase64: useWav ? wavBase64 : audioBase64,
+          apiKey: cloudKey as string,
+          model: openaiConfig?.model || DEFAULT_OPENAI_MODEL,
+          options: {
             ...options,
-            signal: controller.signal,
             transcriptionPrompt: settings.transcriptionPrompt,
             vocabularyHistory,
             ...(useWav ? { mimeType: 'audio/wav' } : mimeType && { mimeType }),
-          }
-        );
+          },
+        }, controller.signal);
       } else {
-        transcript = await transcribeAudio(audioBase64, settings.apiKey, settings.model, {
-          ...options,
-          signal: controller.signal,
-          ...(mimeType && { mimeType }),
-        });
+        transcript = await requestCloud({
+          kind: 'google', audioBase64, apiKey: settings.apiKey, model: settings.model,
+          options: { ...options, ...(mimeType && { mimeType }) },
+        }, controller.signal);
       }
 
       if (requestId !== transcribeRequestIdRef.current) {
@@ -364,12 +364,10 @@ export function App() {
         model: settings.polishModel,
         instruction: settings.polishPrompt,
         minChars: settings.polishMinChars,
-        signal: controller.signal,
-        onLog: (message: string) => window.electronAPI.log?.(message),
       };
       if (isPolishActive(polishOptions, transcript)) {
         setState('polishing');
-        transcript = await polishTranscript(transcript, polishOptions);
+        transcript = await requestCloud({ kind: 'polish', text: transcript, options: polishOptions }, controller.signal);
         if (requestId !== transcribeRequestIdRef.current) {
           return;
         }

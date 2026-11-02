@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AppSettings } from '../shared/types';
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  cloudRequest: (id: string, request: import('../shared/cloud-requests').CloudRequest) =>
+    ipcRenderer.invoke('cloud-request', id, request),
+  cancelCloudRequest: (id: string) => ipcRenderer.send('cancel-cloud-request', id),
   copyToClipboard: (text: string, autoPaste = false) =>
     ipcRenderer.invoke('copy-to-clipboard', text, autoPaste),
   log: (message: string) => ipcRenderer.send('renderer-log', message),
