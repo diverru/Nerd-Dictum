@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { App } from './App';
+import { resetSharedAudioGraph } from '../lib/audio';
+
+// The App listens for `devicechange` on navigator.mediaDevices
+const deviceEventStubs = { addEventListener: () => {}, removeEventListener: () => {} };
 
 // Mock audio infrastructure
 const createMockMediaStream = (): MediaStream =>
@@ -38,6 +42,9 @@ const createMockAudioContext = () => {
       addModule: mock(() => Promise.resolve()),
     },
     destination: {},
+    state: 'running',
+    suspend: mock(() => Promise.resolve()),
+    resume: mock(() => Promise.resolve()),
     close: mock(() => Promise.resolve()),
   };
 };
@@ -145,6 +152,8 @@ describe('App', () => {
   let originalLocation: Location | undefined;
 
   beforeEach(() => {
+    resetSharedAudioGraph();
+
     // Save originals
     originalMediaDevices = navigator.mediaDevices;
     originalAudioContext = window.AudioContext;
@@ -171,7 +180,7 @@ describe('App', () => {
     // Mock navigator.mediaDevices
     const mockGetUserMedia = mock(() => Promise.resolve(createMockMediaStream()));
     Object.defineProperty(navigator, 'mediaDevices', {
-      value: { getUserMedia: mockGetUserMedia },
+      value: { ...deviceEventStubs, getUserMedia: mockGetUserMedia },
       writable: true,
       configurable: true,
     });
@@ -273,6 +282,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(permissionError)),
         },
         writable: true,
@@ -303,6 +313,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(permissionError)),
         },
         writable: true,
@@ -332,6 +343,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(notFoundError)),
         },
         writable: true,
@@ -376,6 +388,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(permissionError)),
         },
         writable: true,
@@ -434,6 +447,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(permissionError)),
         },
         writable: true,
@@ -462,6 +476,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(notFoundError)),
         },
         writable: true,
@@ -490,6 +505,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(permissionError)),
         },
         writable: true,
@@ -517,6 +533,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(notFoundError)),
         },
         writable: true,
@@ -545,6 +562,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(permissionError)),
         },
         writable: true,
@@ -570,6 +588,7 @@ describe('App', () => {
 
       Object.defineProperty(navigator, 'mediaDevices', {
         value: {
+          ...deviceEventStubs,
           getUserMedia: mock(() => Promise.reject(notFoundError)),
         },
         writable: true,
@@ -628,6 +647,9 @@ describe('App', () => {
           addModule: mock(() => Promise.resolve()),
         },
         destination: {},
+        state: 'running',
+        suspend: mock(() => Promise.resolve()),
+        resume: mock(() => Promise.resolve()),
         close: mock(() => Promise.resolve()),
       };
 

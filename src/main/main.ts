@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, clipboard, globalShortcut, Tray, Menu, nativeImage, screen, systemPreferences, shell, dialog, session } from 'electron';
+import { app, BrowserWindow, ipcMain, clipboard, globalShortcut, Tray, Menu, nativeImage, screen, systemPreferences, shell, dialog, session, powerMonitor } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -15,6 +15,7 @@ import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
 import { ParakeetService, type ParakeetStatus } from './parakeet-service';
 import { migrateSettings } from './settings-migration';
 import type { CloudProvider } from '../shared/types';
+import { startMemoryLog, stopMemoryLog } from './memory-log';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1524,6 +1525,12 @@ app.whenReady().then(() => {
   trackEvent('app_start');
   startHeartbeat();
 
+  startMemoryLog(log, () => app.getAppMetrics());
+  powerMonitor.on('suspend', () => log('[Power] suspend'));
+  powerMonitor.on('resume', () => log('[Power] resume'));
+  powerMonitor.on('lock-screen', () => log('[Power] lock-screen'));
+  powerMonitor.on('unlock-screen', () => log('[Power] unlock-screen'));
+
   // Load settings on app start
   appSettings = loadSettings();
 
@@ -1599,6 +1606,7 @@ app.on('will-quit', () => {
   stopKeyboardHook();
   void parakeetService.stop();
   stopHeartbeat();
+  stopMemoryLog();
   if (tray) {
     tray.destroy();
     tray = null;

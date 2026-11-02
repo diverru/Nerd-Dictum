@@ -64,6 +64,54 @@ const defaultDeps: AudioRecorderDeps = {
   },
 };
 
+// One Web Audio graph per renderer lifetime. Chromium does not fully release
+// AudioWorklet contexts after close(), so a context per recording leaked ~38 MB each.
+let sharedContext: AudioContext | null = null;
+let sharedWorkletNode: AudioWorkletNode | null = null;
+let workletModulePromise: Promise<void> | null = null;
+
+async function acquireAudioGraph(
+  deps: AudioRecorderDeps
+): Promise<{ context: AudioContext; workletNode: AudioWorkletNode }> {
+  if (!sharedContext || sharedContext.state === 'closed') {
+    const context = deps.createAudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+    const workletUrl = deps.getWorkletUrl();
+    console.log('[AudioRecorder] Loading worklet from:', workletUrl);
+    sharedContext = context;
+    sharedWorkletNode = null;
+    // Node creation lives inside the promise so a concurrent caller never sees a context without it.
+    workletModulePromise = context.audioWorklet.addModule(workletUrl).then(() => {
+      sharedWorkletNode = new AudioWorkletNode(context, 'audio-capture-processor');
+      sharedWorkletNode.connect(context.destination);
+      console.log('[AudioRecorder] Worklet loaded successfully');
+    });
+  }
+  const context = sharedContext;
+  try {
+    await workletModulePromise;
+  } catch (error) {
+    // Do not keep a half-built graph: the next start() builds a fresh one.
+    if (sharedContext === context) resetSharedAudioGraph();
+    throw error;
+  }
+  if (context.state === 'suspended') {
+    await context.resume();
+  }
+  return { context, workletNode: sharedWorkletNode! };
+}
+
+/**
+ * Close the shared Web Audio graph and forget it; the next start() builds a new one.
+ * Used by tests and when the graph is found broken.
+ */
+export function resetSharedAudioGraph(): void {
+  const context = sharedContext;
+  sharedContext = null;
+  sharedWorkletNode = null;
+  workletModulePromise = null;
+  context?.close().catch(() => {});
+}
+
 export type SilenceStopCallback = () => void;
 export type AudioLevelCallback = (rms: number) => void;
 
@@ -183,29 +231,16 @@ export class AudioRecorder {
         });
       }
 
-      // Create audio context
-      this.audioContext = this.deps.createAudioContext({
-        sampleRate: TARGET_SAMPLE_RATE,
-      });
+      const { context, workletNode } = await acquireAudioGraph(this.deps);
+      this.audioContext = context;
+      this.workletNode = workletNode;
 
       // Store the actual sample rate (may differ from requested)
-      this.originalSampleRate = this.audioContext.sampleRate;
-      console.log(`[AudioRecorder] AudioContext created: requested=${TARGET_SAMPLE_RATE}Hz, actual=${this.originalSampleRate}Hz`);
+      this.originalSampleRate = context.sampleRate;
+      console.log(`[AudioRecorder] AudioContext ready: requested=${TARGET_SAMPLE_RATE}Hz, actual=${this.originalSampleRate}Hz`);
 
       // Create source node from media stream
-      this.sourceNode = this.audioContext.createMediaStreamSource(
-        this.mediaStream
-      );
-
-      // Load and register the AudioWorklet processor
-      // In Electron/Vite, the worklet file is served from the public directory
-      const workletUrl = this.deps.getWorkletUrl();
-      console.log('[AudioRecorder] Loading worklet from:', workletUrl);
-      await this.audioContext.audioWorklet.addModule(workletUrl);
-      console.log('[AudioRecorder] Worklet loaded successfully');
-
-      // Create AudioWorkletNode to replace deprecated ScriptProcessorNode
-      this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-capture-processor');
+      this.sourceNode = context.createMediaStreamSource(this.mediaStream);
 
       // Set up opus encoding via MediaRecorder on the same MediaStream
       this.recordedMimeType = pickRecorderMimeType();
@@ -301,9 +336,8 @@ export class AudioRecorder {
         }
       };
 
-      // Connect nodes: source -> worklet -> destination
+      // Connect source -> worklet (worklet -> destination is wired once with the shared graph)
       this.sourceNode.connect(this.workletNode);
-      this.workletNode.connect(this.audioContext.destination);
 
       this.isRecording = true;
       this.recordingStartTime = Date.now();
@@ -469,7 +503,6 @@ export class AudioRecorder {
 
     if (this.workletNode) {
       this.workletNode.port.onmessage = null;
-      this.workletNode.disconnect();
       this.workletNode = null;
     }
 
@@ -479,7 +512,8 @@ export class AudioRecorder {
     }
 
     if (this.audioContext) {
-      this.audioContext.close().catch(() => {});
+      // Keep the shared context alive; suspend it so an idle app runs no audio thread.
+      this.audioContext.suspend().catch(() => {});
       this.audioContext = null;
     }
 

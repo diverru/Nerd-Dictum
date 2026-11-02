@@ -1,8 +1,9 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import {
   AudioRecorder,
   AudioRecordingError,
   AudioRecorderDeps,
+  resetSharedAudioGraph,
   TARGET_SAMPLE_RATE,
   CHANNELS,
   BITS_PER_SAMPLE,
@@ -42,6 +43,9 @@ interface MockWorkletNode {
 
 interface MockAudioContext {
   sampleRate: number;
+  state: AudioContextState;
+  suspend: ReturnType<typeof mock>;
+  resume: ReturnType<typeof mock>;
   createMediaStreamSource: ReturnType<typeof mock>;
   audioWorklet: {
     addModule: ReturnType<typeof mock>;
@@ -75,6 +79,15 @@ const createMockAudioContext = (sampleRate = TARGET_SAMPLE_RATE): MockAudioConte
 
   const context: MockAudioContext = {
     sampleRate,
+    state: 'suspended',
+    suspend: mock(() => {
+      context.state = 'suspended';
+      return Promise.resolve();
+    }),
+    resume: mock(() => {
+      context.state = 'running';
+      return Promise.resolve();
+    }),
     createMediaStreamSource: mock(() => mockSource),
     audioWorklet: {
       addModule: mock(() => Promise.resolve()),
@@ -127,6 +140,10 @@ const createMockDeps = (
 };
 
 describe('AudioRecorder', () => {
+  beforeEach(() => {
+    resetSharedAudioGraph();
+  });
+
   describe('start()', () => {
     it('should request microphone permission with correct constraints', async () => {
       const { deps, mockContext } = createMockDeps();
@@ -296,9 +313,28 @@ describe('AudioRecorder', () => {
 
       await recorder.stop();
 
-      expect(mockContext._mockWorkletNode.disconnect).toHaveBeenCalled();
       expect(mockContext._mockSource.disconnect).toHaveBeenCalled();
-      expect(mockContext.close).toHaveBeenCalled();
+      expect(mockContext._mockWorkletNode.port.onmessage).toBeNull();
+      expect(mockContext.suspend).toHaveBeenCalled();
+      expect(mockContext.close).not.toHaveBeenCalled();
+    });
+
+    it('reuses one audio graph across recordings and suspends it after each stop', async () => {
+      const { deps, mockContext } = createMockDeps();
+
+      for (let i = 0; i < 2; i++) {
+        const recorder = new AudioRecorder(deps);
+        await recorder.start();
+        expect(mockContext.state).toBe('running');
+        await new Promise((resolve) => setTimeout(resolve, MIN_RECORDING_MS + 50));
+        await recorder.stop();
+        expect(mockContext.suspend).toHaveBeenCalledTimes(i + 1);
+        expect(mockContext.state).toBe('suspended');
+      }
+
+      expect(deps.createAudioContext).toHaveBeenCalledTimes(1);
+      expect(mockContext.audioWorklet.addModule).toHaveBeenCalledTimes(1);
+      expect(mockContext.close).not.toHaveBeenCalled();
     });
   });
 
@@ -328,9 +364,10 @@ describe('AudioRecorder', () => {
       await recorder.start();
       recorder.cancel();
 
-      expect(mockContext._mockWorkletNode.disconnect).toHaveBeenCalled();
       expect(mockContext._mockSource.disconnect).toHaveBeenCalled();
-      expect(mockContext.close).toHaveBeenCalled();
+      expect(mockContext._mockWorkletNode.port.onmessage).toBeNull();
+      expect(mockContext.suspend).toHaveBeenCalled();
+      expect(mockContext.close).not.toHaveBeenCalled();
     });
   });
 

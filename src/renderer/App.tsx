@@ -647,6 +647,21 @@ export function App() {
     }
   }, [state, startRecording, stopRecordingAndTranscribe, cancelTranscription]);
 
+  // Log microphone hot-plug events (a USB mic dropping off a hub) to main.log.
+  useEffect(() => {
+    const onDeviceChange = async () => {
+      try {
+        const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+        const labels = inputs.map((d) => d.label || '(no label)').join(', ').slice(0, 200);
+        window.electronAPI.log?.(`[Devices] audioinput count=${inputs.length}: ${labels}`);
+      } catch {
+        // diagnostics only
+      }
+    };
+    navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+  }, []);
+
   // Listen for global keyboard shortcut (toggle mode)
   useEffect(() => {
     const unsubscribe = window.electronAPI.onToggleRecording(() => {
