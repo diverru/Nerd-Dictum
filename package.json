@@ -16,7 +16,7 @@
     "dev:mac:build": "bun run build && ./node_modules/.bin/electron-builder --mac dir -c.mac.identity=null",
     "dev:mac:stop": "pkill -f '/release/mac-arm64/Nerd Dictum.app/Contents/MacOS/Nerd Dictum' || true",
     "dev:mac": "bun run dev:mac:stop && mkdir -p .dev3/tmp && touch .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log && trap 'bun run dev:mac:stop' EXIT INT TERM && open -W -n --env LOCAL_DEV_BUILD=true --stdout .dev3/tmp/dev-mac.stdout.log --stderr .dev3/tmp/dev-mac.stderr.log './release/mac-arm64/Nerd Dictum.app'",
-    "dev:mac:logs": "mkdir -p .dev3/tmp && touch .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log && tail -n 200 -f ~/Library/Logs/Nerd\\ Dictum/main.log .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log",
+    "dev:mac:logs": "mkdir -p .dev3/tmp && touch .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log && tail -n 200 -f ~/Library/Logs/nerd-dictum/main.log .dev3/tmp/dev-mac.stdout.log .dev3/tmp/dev-mac.stderr.log",
     "dev:mac:tmux": "if [ -n \"$TMUX\" ]; then tmux split-window -v -c \"$PWD\" 'bun run dev:mac:logs'; tmux select-layout even-vertical; fi && bun run dev:mac",
     "build": "bun run build:main && bun run build:preload && bun run build:swift && vite build",
     "build:main": "bun build src/main/main.ts --outdir dist/main --target node --external electron --external onnxruntime-node --external @picovoice/pvrecorder-node --external undici",
@@ -116,7 +116,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
     "concurrently": "^9.2.1",
-    "electron": "^35.7.5",
+    "electron": "^42.0.1",
     "electron-builder": "^26.4.0",
     "happy-dom": "^20.0.11",
     "typescript": "^5.0.0",
@@ -135,5 +135,8 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "uiohook-napi": "^1.5.5"
+  },
+  "overrides": {
+    "shell-quote": "^1.8.4"
   }
 }

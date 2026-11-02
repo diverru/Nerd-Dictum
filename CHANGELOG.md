@@ -6,6 +6,8 @@
 
 ## 2026-10-16 (diverru fork)
 
+[2026-10-16] Dependencies — Electron 35 to 42, and `shell-quote` overridden to `^1.8.4` for CVE-2026-9277 (both from upstream). Since Electron 42 the `electron` package no longer downloads its binary on install; it is fetched the first time it runs.
+
 [2026-10-16] STT — Two transcription modes instead of three: `cloud` and `local`. `cloud` sends the audio to the provider chosen in Settings (`cloudProvider`: Google Gemini or OpenAI) and pastes what comes back; there is no polish step and no Parakeet fallback, a failed request surfaces as an error. `local` is Parakeet TDT v3, offline. Parakeet is now loaded only in `local` mode, and is stopped when the mode is switched away from it. Settings written by older versions are migrated on load (`gemini` to `cloud` + Google, `local-then-gemini` to `cloud` + OpenAI with the model set to `gpt-transcribe`, `local-only` to `local`); stored API keys are kept.
 
 [2026-10-16] STT — OpenAI cloud transcription (`src/lib/openai-stt.ts`): `gpt-transcribe` by default, 16 kHz mono WAV, language from the first configured language, same two-attempt retry as Gemini. The `prompt` field carries a short vocabulary hint, built from the most frequent Latin-script terms in the recent transcript history plus the custom keywords, so English technical terms come back in Latin script.

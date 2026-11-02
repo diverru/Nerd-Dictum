@@ -104,14 +104,14 @@ In `src/main/main.ts`, use the `log()` function instead of `console.log/error/wa
 log('[Component] Message', data);
 ```
 
-**Why:** `console.log` only writes to stdout, which is invisible when the app is launched via Finder/Launchpad/Login Items. The `log()` function uses `electron-log` which writes to both stdout AND a file at `~/Library/Logs/Nerd Dictum/main.log`.
+**Why:** `console.log` only writes to stdout, which is invisible when the app is launched via Finder/Launchpad/Login Items. The `log()` function uses `electron-log` which writes to both stdout AND a file at `~/Library/Logs/nerd-dictum/main.log`.
 
 **Viewing logs:**
 ```bash
 # Real-time
-tail -f ~/Library/Logs/Nerd\ Dictum/main.log
+tail -f ~/Library/Logs/nerd-dictum/main.log
 
-# Or open Console.app → ~/Library/Logs → Nerd Dictum
+# Or open Console.app → ~/Library/Logs → nerd-dictum
 ```
 
 **Format:** Use bracketed component names like `[AutoUpdater]`, `[Settings]`, `[Permissions]`.

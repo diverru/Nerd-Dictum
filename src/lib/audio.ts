@@ -496,7 +496,7 @@ export class AudioRecorder {
 }
 
 // Forward a timing/diagnostic message to the main process log so it
-// shows up in `~/Library/Logs/Nerd Dictum/main.log` (the place the
+// shows up in `~/Library/Logs/nerd-dictum/main.log` (the place the
 // user actually tails). Falls back to console.log in tests / non-Electron.
 function mainLog(message: string): void {
   if (typeof window !== 'undefined' && window.electronAPI?.log) {

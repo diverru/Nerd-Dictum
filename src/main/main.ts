@@ -45,7 +45,10 @@ if (!gotTheLock) {
 }
 
 // Configure electron-log
-// Logs go to: ~/Library/Logs/Nerd Dictum/main.log (macOS)
+// Logs go to: ~/Library/Logs/nerd-dictum/main.log (macOS)
+// The directory is app.name ("nerd-dictum" from package.json), NOT productName
+// ("Nerd Dictum") — electron-log keys on the former. Both packaged and dev
+// builds land in the same place. The exact path is logged at startup.
 // Also visible in Console.app and terminal
 electronLog.transports.file.level = 'info';
 electronLog.transports.console.level = 'info';
@@ -1538,6 +1541,9 @@ async function requestMicrophonePermission(): Promise<boolean> {
 
 app.whenReady().then(() => {
   log('[App] Starting Nerd Dictum', getDisplayVersion());
+  // Print where this very line landed, so nobody has to guess which of
+  // ~/Library/Logs/{nerd-dictum,Nerd Dictum} is the live one.
+  log('[App] Log file:', electronLog.transports.file.getFile().path);
 
   // Allow microphone access from renderer (getUserMedia).
   // Both handlers are needed: check runs first, then request.
