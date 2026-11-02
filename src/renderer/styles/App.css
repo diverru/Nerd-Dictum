@@ -16,7 +16,7 @@
   transition: color 0.2s ease, background 0.2s ease, opacity 0.2s ease;
 }
 
-/* Hide orbit buttons during recording and transcribing */
+/* Hide orbit buttons during recording, transcribing and polishing */
 .widget.recording .stats-button,
 .widget.recording .hide-button,
 .widget.recording .settings-button,
@@ -24,7 +24,11 @@
 .widget.transcribing .stats-button,
 .widget.transcribing .hide-button,
 .widget.transcribing .settings-button,
-.widget.transcribing .info-button {
+.widget.transcribing .info-button,
+.widget.polishing .stats-button,
+.widget.polishing .hide-button,
+.widget.polishing .settings-button,
+.widget.polishing .info-button {
   opacity: 0;
   pointer-events: none;
 }
@@ -153,6 +157,29 @@
   background: #f57c00;
 }
 
+.mic-button.polishing {
+  background: var(--color-polishing, #4a9eff);
+  color: #ffffff;
+}
+
+.mic-button.polishing:hover {
+  background: color-mix(in srgb, var(--color-polishing, #4a9eff) 80%, #000000);
+}
+
+.polishing-icon {
+  animation: polishingPulse 1.2s ease-in-out infinite;
+  transition: opacity 0.15s ease;
+}
+
+@keyframes polishingPulse {
+  0%, 100% {
+    transform: scale(0.85);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+}
+
 .cancel-icon {
   position: absolute;
   font-size: 20px;
@@ -168,6 +195,15 @@
 }
 
 .mic-button.transcribing:hover .spinner {
+  opacity: 0.3;
+}
+
+.mic-button.polishing:hover .cancel-icon {
+  opacity: 1;
+  color: #ffffff;
+}
+
+.mic-button.polishing:hover .polishing-icon {
   opacity: 0.3;
 }
 

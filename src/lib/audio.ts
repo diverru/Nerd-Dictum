@@ -602,6 +602,31 @@ function pickRecorderMimeType(): string {
   return supported || 'audio/webm';
 }
 
+/**
+ * Decode audio the browser can play (opus webm from the recorder, wav, mp3...)
+ * into a 16 kHz mono WAV, the format Parakeet needs. Used when a recording
+ * made for another mode — a failed one retried after the mode was switched
+ * to local — has no WAV alongside it.
+ */
+export async function decodeToWavBase64(audioBase64: string): Promise<string> {
+  const binary = atob(audioBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+  const context = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+  try {
+    const decoded = await context.decodeAudioData(bytes.buffer);
+    const mono = new Float32Array(decoded.length);
+    for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+      const data = decoded.getChannelData(channel);
+      for (let i = 0; i < mono.length; i++) mono[i] += data[i] / decoded.numberOfChannels;
+    }
+    return buildWavBase64FromPcm([mono], decoded.sampleRate, TARGET_SAMPLE_RATE);
+  } finally {
+    void context.close();
+  }
+}
+
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

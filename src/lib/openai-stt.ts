@@ -18,10 +18,12 @@ const TRANSCRIPTIONS_URL = 'https://api.openai.com/v1/audio/transcriptions';
 // OpenAI rejects uploads over 25 MB. Base64 inflates by 4/3.
 export const OPENAI_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-const HINT_PREFIX = 'Разговор русскоязычного разработчика. Английские технические термины пишутся латиницей';
+export const DEFAULT_TRANSCRIPTION_PROMPT =
+  'Диктовка разработчика. Он пишет на Python и C++, работает с React и JavaScript во всех его формах. Английские технические термины пишутся латиницей.';
+// Whole prompt: the user's text plus the vocabulary list.
+const MAX_PROMPT_CHARS = 1000;
 const MAX_HINT_HISTORY_TERMS = 45;
 const MAX_HINT_CUSTOM_TERMS = 20;
-const MAX_HINT_LIST_CHARS = 500;
 const LATIN_TOKEN = /[A-Za-z][A-Za-z0-9.+#_-]{1,}/g;
 // Common English words that show up in transcripts without being vocabulary.
 const STOP_WORDS = new Set([
@@ -39,21 +41,39 @@ const MIME_EXTENSIONS: Record<string, string> = {
   'video/mp4': 'mp4',
 };
 
+/** Longest prefix of `terms` that fits `budget` characters once joined with ", ". */
+function takeWithin(terms: string[], budget: number, max = Infinity): string[] {
+  const taken: string[] = [];
+  let used = 0;
+  for (const term of terms) {
+    const cost = term.length + (taken.length > 0 ? 2 : 0);
+    if (taken.length >= max || used + cost > budget) break;
+    taken.push(term);
+    used += cost;
+  }
+  return taken;
+}
+
 /**
- * Build the `prompt` field: a short sentence plus a comma-separated list of
- * Latin-script terms: the most frequent ones in the recent transcripts, then
- * the user's own keywords. Bounded in length; an empty history gives the
- * sentence alone.
+ * Build the `prompt` field: the user's own text, then a comma-separated list
+ * of Latin-script terms — the most frequent ones in the transcript history,
+ * then the user's keywords. The list is trimmed to fit MAX_PROMPT_CHARS, never
+ * the user's text. An empty text sends the list alone; nothing at all gives ''.
  */
-export function buildVocabularyHint(history: string[] = [], customKeywords?: string): string {
+export function buildVocabularyHint(
+  history: string[] = [],
+  customKeywords?: string,
+  prompt: string = DEFAULT_TRANSCRIPTION_PROMPT
+): string {
+  const text = prompt.trim().slice(0, MAX_PROMPT_CHARS);
   const counts = new Map<string, { term: string; count: number }>();
-  for (const text of history) {
-    for (const match of text.match(LATIN_TOKEN) ?? []) {
+  for (const entry of history) {
+    for (const match of entry.match(LATIN_TOKEN) ?? []) {
       const term = match.replace(/[.\-_]+$/, '');
       const key = term.toLowerCase();
       if (term.length < 2 || STOP_WORDS.has(key)) continue;
-      const entry = counts.get(key);
-      if (entry) entry.count++;
+      const found = counts.get(key);
+      if (found) found.count++;
       else counts.set(key, { term, count: 1 });
     }
   }
@@ -69,17 +89,20 @@ export function buildVocabularyHint(history: string[] = [], customKeywords?: str
     .sort((a, b) => b[1].count - a[1].count)
     .map(([, entry]) => entry.term);
 
-  // The user's own keywords always make it in; history terms fill the rest.
-  let used = custom.join(', ').length;
-  const terms: string[] = [];
-  for (const term of ranked) {
-    if (terms.length >= MAX_HINT_HISTORY_TERMS || used + term.length + 2 > MAX_HINT_LIST_CHARS) break;
-    terms.push(term);
-    used += term.length + 2;
-  }
+  // Room for the list: the text, a space after it and the closing dot.
+  const budget = MAX_PROMPT_CHARS - (text ? text.length + 1 : 0) - 1;
+  // The user's own keywords come first in the budget; history terms fill the rest.
+  const customFit = takeWithin(custom, budget);
+  const customLength = customFit.join(', ').length;
+  const historyFit = takeWithin(
+    ranked,
+    budget - customLength - (customFit.length > 0 ? 2 : 0),
+    MAX_HINT_HISTORY_TERMS
+  );
 
-  const list = [...terms, ...custom];
-  return list.length > 0 ? `${HINT_PREFIX}: ${list.join(', ')}.` : `${HINT_PREFIX}.`;
+  const list = [...historyFit, ...customFit];
+  if (list.length === 0) return text;
+  return text ? `${text} ${list.join(', ')}.` : `${list.join(', ')}.`;
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
@@ -93,17 +116,28 @@ function isNonRetryableError(error: Error): boolean {
   return error.message.includes('API key') || error.message.includes('Bad request');
 }
 
+export interface OpenAIRequestOptions extends TranscribeRequestOptions {
+  /** The user's prompt text; undefined means the default, '' means none. */
+  transcriptionPrompt?: string;
+  /** Past transcripts the vocabulary list is built from. */
+  vocabularyHistory?: string[];
+}
+
 export async function transcribeWithOpenAI(
   audioBase64: string,
   apiKey: string,
   model: string = DEFAULT_OPENAI_MODEL,
-  options?: TranscribeRequestOptions
+  options?: OpenAIRequestOptions
 ): Promise<string> {
   const requestSignal = options?.signal;
   const mimeType = options?.mimeType?.split(';')[0] || 'audio/wav';
   const extension = MIME_EXTENSIONS[mimeType] ?? 'wav';
   const audio = base64ToBlob(audioBase64, mimeType);
-  const hint = buildVocabularyHint(options?.previousTranscripts, options?.customKeywords);
+  const hint = buildVocabularyHint(
+    options?.vocabularyHistory,
+    options?.customKeywords,
+    options?.transcriptionPrompt
+  );
 
   const buildForm = () => {
     const form = new FormData();
@@ -112,7 +146,7 @@ export async function transcribeWithOpenAI(
     form.append('response_format', 'json');
     const language = options?.languages?.[0];
     if (language) form.append('language', language);
-    form.append('prompt', hint);
+    if (hint) form.append('prompt', hint);
     return form;
   };
 

@@ -9,13 +9,16 @@ import electronLog from 'electron-log';
 import { initAnalytics, trackEvent, startHeartbeat, stopHeartbeat } from '../lib/analytics';
 import { getDisplayBounds, isPositionValid } from './window-position';
 import type { WindowPosition } from './window-position';
-import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts } from './transcript-history';
+import { loadTranscriptHistory, addTranscriptToHistory, getRecentTranscripts, getTranscriptHistory } from './transcript-history';
 import { loadStats, recordTranscription, getStatsWithDerived, resetStats } from './stats';
 import { startKeyboardHook, stopKeyboardHook } from './keyboard-hook';
 import { ParakeetService, type ParakeetStatus } from './parakeet-service';
 import { migrateSettings } from './settings-migration';
+import { DEFAULT_TRANSCRIPTION_PROMPT } from '../lib/openai-stt';
+import { DEFAULT_POLISH_MODEL, DEFAULT_POLISH_PROMPT, DEFAULT_POLISH_MIN_CHARS } from '../lib/polish';
 import type { CloudProvider } from '../shared/types';
 import { startMemoryLog, stopMemoryLog } from './memory-log';
+import { saveFailedRecording, FAILED_RECORDINGS_DIR_NAME } from './failed-recordings';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -410,6 +413,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoPasteEnabled: false,
   transcriptionMode: 'cloud',
   cloudProvider: 'google',
+  transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
+  polishEnabled: false,
+  polishPrompt: DEFAULT_POLISH_PROMPT,
+  polishMinChars: DEFAULT_POLISH_MIN_CHARS,
+  polishModel: DEFAULT_POLISH_MODEL,
   providerConfigs: {},
   mediaPauseMode: 'duck',
 };
@@ -512,7 +520,16 @@ let infoWindow: BrowserWindow | null = null;
 let hideWindow: BrowserWindow | null = null;
 let statsWindow: BrowserWindow | null = null;
 let errorDetailWindow: BrowserWindow | null = null;
-let pendingErrorDetail: { message: string; statusCode?: number; responseBody?: string } | null = null;
+interface ErrorDetailPayload {
+  message: string;
+  statusCode?: number;
+  responseBody?: string;
+  /** Absolute path to the recording that failed, when it could be saved */
+  audioFilePath?: string;
+  audioFileName?: string;
+  audioSizeBytes?: number;
+}
+let pendingErrorDetail: ErrorDetailPayload | null = null;
 let tray: Tray | null = null;
 let hideTimer: NodeJS.Timeout | null = null;
 
@@ -1861,6 +1878,11 @@ ipcMain.handle('get-settings', () => {
     autoPasteEnabled: appSettings.autoPasteEnabled,
     transcriptionMode: appSettings.transcriptionMode,
     cloudProvider: appSettings.cloudProvider,
+    transcriptionPrompt: appSettings.transcriptionPrompt,
+    polishEnabled: appSettings.polishEnabled,
+    polishPrompt: appSettings.polishPrompt,
+    polishMinChars: appSettings.polishMinChars,
+    polishModel: appSettings.polishModel,
     providerConfigs: appSettings.providerConfigs,
     mediaPauseMode: appSettings.mediaPauseMode,
   };
@@ -2036,6 +2058,10 @@ ipcMain.handle('get-recent-transcripts', () => {
   return getRecentTranscripts();
 });
 
+ipcMain.handle('get-transcript-history', () => {
+  return getTranscriptHistory();
+});
+
 // Hide widget for a specified duration (-1 means forever/permanent)
 ipcMain.handle('hide-for-duration', (_event, durationMs: number) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -2136,7 +2162,7 @@ ipcMain.handle('record-transcription-stats', (_event, transcript: string, record
 });
 
 // Error detail window handlers
-ipcMain.handle('open-error-detail-window', (_event, detail: { message: string; statusCode?: number; responseBody?: string }) => {
+ipcMain.handle('open-error-detail-window', (_event, detail: ErrorDetailPayload) => {
   pendingErrorDetail = detail;
   createErrorDetailWindow();
   return true;
@@ -2144,6 +2170,48 @@ ipcMain.handle('open-error-detail-window', (_event, detail: { message: string; s
 
 ipcMain.handle('get-error-detail', () => {
   return pendingErrorDetail || { message: 'Unknown error' };
+});
+
+// Failed-recording persistence: keep the audio around so a 503 does not
+// destroy a long dictation.
+ipcMain.handle('save-failed-recording', (_event, audioBase64: string, mimeType?: string) => {
+  try {
+    const dir = path.join(app.getPath('userData'), FAILED_RECORDINGS_DIR_NAME);
+    const saved = saveFailedRecording(dir, audioBase64, mimeType);
+    log('[FailedRecording] Saved', saved.filePath, `${saved.sizeBytes} bytes`);
+    return saved;
+  } catch (error) {
+    log('[FailedRecording] Failed to save recording:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('show-item-in-folder', (_event, filePath: string) => {
+  if (!fs.existsSync(filePath)) {
+    log('[FailedRecording] Cannot reveal missing file:', filePath);
+    return false;
+  }
+  shell.showItemInFolder(filePath);
+  return true;
+});
+
+// Retry from the error window: hand the file back to the main widget, which
+// owns the transcription flow, then get the error window out of the way.
+ipcMain.handle('retry-failed-recording', (_event, filePath: string) => {
+  if (!fs.existsSync(filePath)) {
+    log('[FailedRecording] Cannot retry missing file:', filePath);
+    return false;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    log('[FailedRecording] Cannot retry, main window is gone');
+    return false;
+  }
+  log('[FailedRecording] Retrying', filePath);
+  mainWindow.webContents.send('retry-transcription', filePath);
+  if (errorDetailWindow && !errorDetailWindow.isDestroyed()) {
+    errorDetailWindow.close();
+  }
+  return true;
 });
 
 // Read a file and return its contents as base64

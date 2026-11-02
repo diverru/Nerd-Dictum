@@ -35,6 +35,7 @@
      which read as a fault while merely dictating. */
   --color-recording: #4caf50;
   --color-transcribing: #ff9800;
+  --color-polishing: #4a9eff;
   --color-mic-idle: #3a3a3a;
   --color-tachometer-bg: rgba(255, 255, 255, 0.15);
   --color-tachometer-low: #64b5f6;

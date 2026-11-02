@@ -17,7 +17,7 @@ interface TranscriptEntry {
   timestamp: number;
 }
 
-const MAX_TRANSCRIPTS_STORED = 10;
+const MAX_TRANSCRIPTS_STORED = 200;
 let transcriptHistory: TranscriptEntry[] = [];
 
 function getTranscriptHistoryPath(): string {
@@ -73,6 +73,11 @@ export function addTranscriptToHistory(text: string): void {
 }
 
 const CONTEXT_TRANSCRIPT_COUNT = 3;
+
+/** The whole stored history, newest first — the source of the vocabulary list. */
+export function getTranscriptHistory(): string[] {
+  return transcriptHistory.map(entry => entry.text);
+}
 
 export function getRecentTranscripts(): string[] {
   return transcriptHistory

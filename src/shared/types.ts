@@ -45,6 +45,14 @@ export interface AppSettings {
   // The legacy `apiKey` / `model` fields above are the Google Gemini config.
   // OpenAI credentials live in `providerConfigs.openai`.
   cloudProvider: CloudProvider;
+  // Text that opens the OpenAI transcription prompt; the vocabulary list follows it.
+  transcriptionPrompt: string;
+  // Second request to a small OpenAI model that polishes the transcript by `polishPrompt` (OpenAI cloud path only).
+  polishEnabled: boolean;
+  polishPrompt: string;
+  // Transcripts shorter than this many characters are not polished; 0 polishes everything.
+  polishMinChars: number;
+  polishModel: string;
   providerConfigs: { openai?: ProviderConfig };
   // What to do with system audio while recording.
   // 'duck' — lower system volume to RECORDING_VOLUME (default, smooth).

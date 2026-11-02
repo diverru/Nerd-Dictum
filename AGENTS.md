@@ -162,9 +162,12 @@ Gemini-direct dictation:
   - `cloud`: audio → the provider in `cloudProvider`, the transcript is
     pasted as is. `google` uses `apiKey` / `model` (Gemini). `openai` uses
     `providerConfigs.openai` (default model `gpt-transcribe`, 16 kHz WAV
-    upload, `src/lib/openai-stt.ts`); its `prompt` field carries a
-    vocabulary hint of Latin-script terms from recent transcripts plus
-    `customKeywords`.
+    upload, `src/lib/openai-stt.ts`); its `prompt` field carries the
+    editable `transcriptionPrompt` text followed by a list of Latin-script
+    terms from the stored transcript history (200 entries) plus
+    `customKeywords`, about 1000 characters in all.
+    With `polishEnabled` (OpenAI only) a second request, `src/lib/polish.ts`,
+    rewrites the transcript by `polishPrompt`; failures keep the raw text.
   - `local`: Parakeet only, fully offline, no API key. Parakeet is loaded
     only in this mode.
 - **Backend**: macOS-only Swift CLI (`swift/Sources/parakeet-bridge/main.swift`)

@@ -6,15 +6,23 @@
 
 ## 2026-10-16 (diverru fork)
 
-[2026-10-16] Removed — Clipboard history: the "Previous Clipboard" tray submenu and the Cmd+Shift+V shortcut that restored earlier clipboard contents. Auto-paste still puts your previous clipboard back after pasting (that code moved to `clipboard-snapshot.ts`).
-
-[2026-10-16] Dependencies — Electron 35 to 42, and `shell-quote` overridden to `^1.8.4` for CVE-2026-9277 (both from upstream). Since Electron 42 the `electron` package no longer downloads its binary on install; it is fetched the first time it runs.
-
 [2026-10-16] STT — Two transcription modes instead of three: `cloud` and `local`. `cloud` sends the audio to the provider chosen in Settings (`cloudProvider`: Google Gemini or OpenAI) and pastes what comes back; there is no polish step and no Parakeet fallback, a failed request surfaces as an error. `local` is Parakeet TDT v3, offline. Parakeet is now loaded only in `local` mode, and is stopped when the mode is switched away from it. Settings written by older versions are migrated on load (`gemini` to `cloud` + Google, `local-then-gemini` to `cloud` + OpenAI with the model set to `gpt-transcribe`, `local-only` to `local`); stored API keys are kept.
 
 [2026-10-16] STT — OpenAI cloud transcription (`src/lib/openai-stt.ts`): `gpt-transcribe` by default, 16 kHz mono WAV, language from the first configured language, same two-attempt retry as Gemini. The `prompt` field carries a short vocabulary hint, built from the most frequent Latin-script terms in the recent transcript history plus the custom keywords, so English technical terms come back in Latin script.
 
+[2026-10-16] STT — The text that opens the OpenAI transcription prompt is now a setting (Settings, cloud mode with OpenAI), with a default for Python/C++/React/JavaScript dictation. The vocabulary list still follows it; if the text is long, the list is trimmed first, and the whole prompt stays within about 1000 characters. An empty field sends the list alone. The Google path does not use it.
+
+[2026-10-16] STT — The transcript history now keeps 200 entries instead of 10, so the vocabulary list has enough material. Gemini's context still takes only the last 3.
+
+[2026-10-16] Feature — Optional transcript polish (Settings, cloud mode with OpenAI; off by default). A second request sends the finished transcript to a small chat model (`gpt-5.4-nano` by default, its own setting) with an instruction you edit in Settings; the default one adds paragraphs, drops filler words and slips, and keeps wording and technical terms. The answer is pasted as it comes. If the request times out (30 s), fails or comes back empty, the raw transcript is pasted instead, and the raw transcript is written to the log before the request is sent. While it runs the microphone turns blue with a sparkle. Transcripts shorter than a minimum length (a setting, 57 characters by default, 0 polishes everything) skip the request. Never runs in `local` mode or with Google.
+
 [2026-10-16] Removed — LLM polish, the wake-word listener (with its hands-free Enter) and the voice-tension detector with its cool-down block. Recordings already saved in `~/.nerd-dictum/` are left in place; nothing writes new ones. The microphone request keeps `autoGainControl: false`.
+
+[2026-10-16] Feature — A failed transcription no longer costs you the recording (ported from upstream). In both `cloud` and `local` mode the audio is written to `<userData>/failed-recordings/` before the error is shown (20 most recent kept), and the error window always opens, with a **Retry** button and a clickable file name that reveals the file in Finder. Retry re-runs the transcription in whatever mode is configured at that moment: a recording saved in cloud mode and retried after switching to `local` is decoded to a 16 kHz WAV first. Audio is also kept when the API key is missing. `dev:mac:logs` and the docs now point at `~/Library/Logs/nerd-dictum/main.log`, the real log directory.
+
+[2026-10-16] Dependencies — Electron 35 to 42, and `shell-quote` overridden to `^1.8.4` for CVE-2026-9277 (both from upstream). Since Electron 42 the `electron` package no longer downloads its binary on install; it is fetched the first time it runs.
+
+[2026-10-16] Removed — Clipboard history: the "Previous Clipboard" tray submenu and the Cmd+Shift+V shortcut that restored earlier clipboard contents. Auto-paste still puts your previous clipboard back after pasting (that code moved to `clipboard-snapshot.ts`).
 
 ## 2026-05-27 (diverru fork)
 

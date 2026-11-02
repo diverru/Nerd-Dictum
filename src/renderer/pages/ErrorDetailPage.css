@@ -80,3 +80,82 @@
   word-break: break-all;
   margin: 0;
 }
+
+/* Saved recording + retry — the row that keeps a failed dictation recoverable */
+.error-detail-recording {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--bg-secondary, #2a2a2a);
+  border: 1px solid var(--border-default, #404040);
+  border-radius: 6px;
+}
+
+.error-detail-recording-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.error-detail-recording-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary, #707070);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.error-detail-file-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  color: var(--color-accent, #4a9eff);
+  text-decoration: underline;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.error-detail-file-link:hover {
+  color: var(--color-accent-hover, #6cb2ff);
+}
+
+.error-detail-recording-size {
+  font-size: 12px;
+  color: var(--text-tertiary, #707070);
+}
+
+.error-detail-retry-button {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-accent, #4a9eff);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.error-detail-retry-button:hover:not(:disabled) {
+  background: var(--color-accent-hover, #6cb2ff);
+}
+
+.error-detail-retry-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.error-detail-recording--missing .error-detail-recording-label {
+  color: var(--color-error, #f44336);
+}

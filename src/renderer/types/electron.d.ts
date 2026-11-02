@@ -7,6 +7,16 @@ export interface ErrorDetail {
   message: string;
   statusCode?: number;
   responseBody?: string;
+  /** Absolute path to the saved recording that failed, when it could be saved */
+  audioFilePath?: string;
+  audioFileName?: string;
+  audioSizeBytes?: number;
+}
+
+export interface SavedRecording {
+  filePath: string;
+  fileName: string;
+  sizeBytes: number;
 }
 
 export interface ElectronAPI {
@@ -58,6 +68,7 @@ export interface ElectronAPI {
   openExternalUrl: (url: string) => Promise<boolean>;
   getAppVersion: () => Promise<string>;
   getRecentTranscripts: () => Promise<string[]>;
+  getTranscriptHistory: () => Promise<string[]>;
   hideForDuration: (durationMs: number) => Promise<boolean>;
   trackEvent: (name: string, params?: Record<string, string | number>) => Promise<void>;
   pauseMedia: () => Promise<void>;
@@ -71,6 +82,11 @@ export interface ElectronAPI {
   // Error detail
   openErrorDetailWindow: (detail: ErrorDetail) => Promise<boolean>;
   getErrorDetail: () => Promise<ErrorDetail>;
+  // Failed recordings
+  saveFailedRecording: (audioBase64: string, mimeType?: string) => Promise<SavedRecording | null>;
+  showItemInFolder: (filePath: string) => Promise<boolean>;
+  retryFailedRecording: (filePath: string) => Promise<boolean>;
+  onRetryTranscription: (callback: (filePath: string) => void) => () => void;
   // File operations
   getPathForFile: (file: File) => string;
   readFileAsBase64: (filePath: string) => Promise<string>;

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import './styles/App.css';
-import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS } from '../lib/audio';
+import { AudioRecorder, AudioRecorderOptions, DEFAULT_SILENCE_DURATION_MS, decodeToWavBase64 } from '../lib/audio';
 import { transcribeAudio, TranscribeOptions, TranscriptionCancelledError } from '../lib/gemini';
+import { polishTranscript, isPolishActive, type PolishOptions } from '../lib/polish';
 import { transcribeWithOpenAI, DEFAULT_OPENAI_MODEL, OPENAI_MAX_UPLOAD_BYTES } from '../lib/openai-stt';
 import { classifyError, ClassifiedError } from '../lib/errors';
 import { playStartSound, playSuccessSound, playErrorSound } from '../lib/sounds';
@@ -11,7 +12,7 @@ import { HideButton } from './components/HideButton';
 import { StatsButton } from './components/StatsButton';
 import { AudioLevelRing } from './components/AudioLevelRing';
 import { MinimalStrip } from './components/MinimalStrip';
-import type { AppSettings } from './types/electron';
+import type { AppSettings, ErrorDetail } from './types/electron';
 
 const MESSAGE_TIMEOUT_MS = 2000;
 const RETRY_MESSAGE_TIMEOUT_MS = 4000;
@@ -124,9 +125,16 @@ const AUDIO_EXTENSIONS: Record<string, string> = {
   '.wav': 'audio/wav',
   '.ogg': 'audio/ogg',
   '.mp4': 'video/mp4',
+  '.webm': 'audio/webm',
+  '.m4a': 'audio/mp4',
 };
 
-type AppState = 'idle' | 'recording' | 'transcribing' | 'success';
+function mimeTypeForPath(filePath: string): string | undefined {
+  const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+  return AUDIO_EXTENSIONS[ext];
+}
+
+type AppState = 'idle' | 'recording' | 'transcribing' | 'polishing' | 'success';
 type MessageType = 'success' | 'error';
 
 interface FlashMessage {
@@ -179,7 +187,20 @@ export function App() {
     messageTimeoutRef.current = setTimeout(() => setMessage(null), duration);
   }, []);
 
-  const lastErrorDetailRef = useRef<{ message: string; statusCode?: number; responseBody?: string } | null>(null);
+  const lastErrorDetailRef = useRef<ErrorDetail | null>(null);
+
+  /**
+   * Write the audio to disk so a failed transcription does not evaporate.
+   * Never throws — losing the file is bad, but crashing the error path is worse.
+   */
+  const persistFailedAudio = useCallback(async (audioBase64: string, mimeType?: string) => {
+    try {
+      return await window.electronAPI.saveFailedRecording(audioBase64, mimeType);
+    } catch (error) {
+      console.error('[FailedRecording] Could not save audio:', error);
+      return null;
+    }
+  }, []);
 
   const showError = useCallback((error: unknown) => {
     const classified: ClassifiedError = classifyError(error);
@@ -229,9 +250,11 @@ export function App() {
       if (!cloudKey && settings.transcriptionMode !== 'local') {
         showMessage('Set API key in settings', 'error', true);
         window.electronAPI.openSettingsWindow();
-        // Save audio for retry after setting API key
+        // Save audio for retry after setting API key — in memory for the
+        // tap-to-retry flash, and on disk so it survives the next recording.
         lastAudioRef.current = audioBase64;
         lastAudioMimeTypeRef.current = mimeType;
+        await persistFailedAudio(audioBase64, mimeType);
         setState('idle');
         return;
       }
@@ -243,15 +266,21 @@ export function App() {
       }
 
       const options = buildTranscribeOptions(settings, previousTranscripts);
+      // OpenAI builds its vocabulary list from the whole stored history, not
+      // just the few transcripts that go to Gemini as context.
+      const vocabularyHistory =
+        settings.cloudProvider === 'openai' && (settings.previousTranscriptContextEnabled ?? true)
+          ? await window.electronAPI.getTranscriptHistory()
+          : [];
       let transcript: string;
       if (settings.transcriptionMode === 'local') {
-        if (!wavBase64) {
-          throw new Error('local mode requires WAV audio (retainPcmForWav)');
-        }
         if (!window.electronAPI.transcribeLocalStt) {
           throw new Error('Local STT IPC not available');
         }
-        const localResult = await window.electronAPI.transcribeLocalStt(wavBase64);
+        // A retried, saved or dropped recording has no WAV alongside it.
+        const localResult = await window.electronAPI.transcribeLocalStt(
+          wavBase64 ?? (await decodeToWavBase64(audioBase64))
+        );
         if (!localResult.ok) {
           throw new Error(`Local STT failed: ${localResult.error}`);
         }
@@ -266,6 +295,8 @@ export function App() {
           {
             ...options,
             signal: controller.signal,
+            transcriptionPrompt: settings.transcriptionPrompt,
+            vocabularyHistory,
             ...(useWav ? { mimeType: 'audio/wav' } : mimeType && { mimeType }),
           }
         );
@@ -324,6 +355,26 @@ export function App() {
         return;
       }
 
+      // Optional second request that polishes the text; any failure keeps the raw transcript.
+      const polishOptions: PolishOptions = {
+        enabled: settings.polishEnabled ?? false,
+        mode: settings.transcriptionMode,
+        provider: settings.cloudProvider,
+        apiKey: openaiConfig?.apiKey ?? '',
+        model: settings.polishModel,
+        instruction: settings.polishPrompt,
+        minChars: settings.polishMinChars,
+        signal: controller.signal,
+        onLog: (message: string) => window.electronAPI.log?.(message),
+      };
+      if (isPolishActive(polishOptions, transcript)) {
+        setState('polishing');
+        transcript = await polishTranscript(transcript, polishOptions);
+        if (requestId !== transcribeRequestIdRef.current) {
+          return;
+        }
+      }
+
       // Copy to clipboard
       // autoPaste=true: dispatch ⌘V into the focused window so the
       // transcript appears at the cursor without keyboard interaction.
@@ -365,14 +416,24 @@ export function App() {
       console.error('[Transcribe] Classified error:', classified);
       window.electronAPI.trackEvent('transcription_error', { error_type: classified.type });
 
-      // Auto-open error detail popup when API returns a response body
-      if (classified.responseBody) {
-        window.electronAPI.openErrorDetailWindow({
-          message: classified.message,
-          statusCode: classified.statusCode,
-          responseBody: classified.responseBody,
-        });
-      }
+      // Persist the audio before anything else: a 503 (or any other failure)
+      // must not cost the user a long dictation.
+      const saved = await persistFailedAudio(audioBase64, mimeType);
+
+      // Open the error window for every failed transcription, not just the
+      // ones with a response body — it is where Retry and the saved file live.
+      const detail: ErrorDetail = {
+        message: classified.message,
+        statusCode: classified.statusCode,
+        responseBody: classified.responseBody,
+        ...(saved && {
+          audioFilePath: saved.filePath,
+          audioFileName: saved.fileName,
+          audioSizeBytes: saved.sizeBytes,
+        }),
+      };
+      lastErrorDetailRef.current = detail;
+      window.electronAPI.openErrorDetailWindow(detail);
 
       // Play error sound if enabled
       if (soundEnabled) {
@@ -393,13 +454,28 @@ export function App() {
         transcribeAbortRef.current = null;
       }
     }
-  }, [showError, showMessage]);
+  }, [showError, showMessage, persistFailedAudio]);
 
   const handleRetry = useCallback(async () => {
     if (lastAudioRef.current && state === 'idle') {
       await transcribeWithRetry(lastAudioRef.current, lastAudioMimeTypeRef.current);
     }
   }, [state, transcribeWithRetry]);
+
+  /** Re-send a recording that was saved to disk after an earlier failure. */
+  const retryFromFile = useCallback(async (filePath: string) => {
+    try {
+      const audioBase64 = await window.electronAPI.readFileAsBase64(filePath);
+      if (!audioBase64) {
+        showMessage('Saved recording is empty', 'error', false);
+        return;
+      }
+      window.electronAPI.trackEvent('transcription_retry_from_file');
+      await transcribeWithRetry(audioBase64, mimeTypeForPath(filePath));
+    } catch (error) {
+      showError(error);
+    }
+  }, [transcribeWithRetry, showError, showMessage]);
 
   const handleShowErrorDetail = useCallback(() => {
     if (lastErrorDetailRef.current) {
@@ -452,7 +528,7 @@ export function App() {
   }, [transcribeWithRetry, showError]);
 
   const cancelTranscription = useCallback(() => {
-    if (state !== 'transcribing') return;
+    if (state !== 'transcribing' && state !== 'polishing') return;
 
     const controller = transcribeAbortRef.current;
     transcribeAbortRef.current = null;
@@ -642,7 +718,7 @@ export function App() {
       await startRecording();
     } else if (state === 'recording') {
       await stopRecordingAndTranscribe();
-    } else if (state === 'transcribing') {
+    } else if (state === 'transcribing' || state === 'polishing') {
       cancelTranscription();
     }
   }, [state, startRecording, stopRecordingAndTranscribe, cancelTranscription]);
@@ -726,6 +802,16 @@ export function App() {
       unsubUp?.();
     };
   }, []);
+
+  // Retry requested from the error detail window
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onRetryTranscription?.((filePath: string) => {
+      retryFromFile(filePath);
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [retryFromFile]);
 
   // Load app version on mount
   useEffect(() => {
@@ -895,11 +981,24 @@ export function App() {
                 ? 'Stop recording'
                 : 'Cancel transcription'
           }
-          title={state === 'transcribing' ? 'Click to cancel' : undefined}
+          title={state === 'transcribing' || state === 'polishing' ? 'Click to cancel' : undefined}
         >
           {state === 'transcribing' ? (
             <>
               <span className="spinner" />
+              <span className="cancel-icon" aria-hidden="true">✕</span>
+            </>
+          ) : state === 'polishing' ? (
+            <>
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                width="32"
+                height="32"
+                className="polishing-icon"
+              >
+                <path d="M12 2l2.4 7.1L22 12l-7.6 2.9L12 22l-2.4-7.1L2 12l7.6-2.9z" />
+              </svg>
               <span className="cancel-icon" aria-hidden="true">✕</span>
             </>
           ) : state === 'success' ? (

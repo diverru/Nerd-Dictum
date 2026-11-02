@@ -1,6 +1,7 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import {
   AudioRecorder,
+  decodeToWavBase64,
   AudioRecordingError,
   AudioRecorderDeps,
   resetSharedAudioGraph,
@@ -842,5 +843,36 @@ describe('AudioRecorder', () => {
 
       expect(audioLevelCallback).toHaveBeenCalled();
     });
+  });
+});
+
+describe('decodeToWavBase64', () => {
+  it('mixes the decoded channels down to a mono 16 kHz WAV', async () => {
+    const left = new Float32Array([0.5, 0.5, 0.5, 0.5]);
+    const right = new Float32Array([-0.5, -0.5, 0.5, 0.5]);
+    const close = mock(() => Promise.resolve());
+    const original = (globalThis as { AudioContext?: unknown }).AudioContext;
+    (globalThis as { AudioContext?: unknown }).AudioContext = class {
+      decodeAudioData = mock(() =>
+        Promise.resolve({
+          length: 4,
+          numberOfChannels: 2,
+          sampleRate: TARGET_SAMPLE_RATE,
+          getChannelData: (i: number) => (i === 0 ? left : right),
+        })
+      );
+      close = close;
+    };
+    try {
+      const wav = Buffer.from(await decodeToWavBase64(Buffer.from('opus').toString('base64')), 'base64');
+      expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
+      expect(wav.readUInt16LE(22)).toBe(1); // channels
+      expect(wav.readUInt32LE(24)).toBe(TARGET_SAMPLE_RATE);
+      expect(wav.readInt16LE(44)).toBe(0); // (0.5 + -0.5) / 2
+      expect(wav.readInt16LE(50)).toBeGreaterThan(16000); // (0.5 + 0.5) / 2
+      expect(close).toHaveBeenCalled();
+    } finally {
+      (globalThis as { AudioContext?: unknown }).AudioContext = original;
+    }
   });
 });

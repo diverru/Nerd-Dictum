@@ -1,20 +1,19 @@
 import { describe, it, expect } from 'bun:test';
-import { buildVocabularyHint } from './openai-stt';
+import { buildVocabularyHint, DEFAULT_TRANSCRIPTION_PROMPT } from './openai-stt';
 
-const PREFIX = 'Разговор русскоязычного разработчика. Английские технические термины пишутся латиницей';
-
-function termsOf(hint: string): string[] {
-  return hint.slice(PREFIX.length + 2, -1).split(', ');
+// The default text, a space, the list, a closing dot.
+function termsOf(hint: string, prompt: string = DEFAULT_TRANSCRIPTION_PROMPT): string[] {
+  return hint.slice(prompt.length + 1, -1).split(', ');
 }
 
 describe('buildVocabularyHint', () => {
   it('returns a valid sentence for an empty history', () => {
-    expect(buildVocabularyHint([])).toBe(`${PREFIX}.`);
-    expect(buildVocabularyHint()).toBe(`${PREFIX}.`);
+    expect(buildVocabularyHint([])).toBe(DEFAULT_TRANSCRIPTION_PROMPT);
+    expect(buildVocabularyHint()).toBe(DEFAULT_TRANSCRIPTION_PROMPT);
   });
 
   it('ignores Cyrillic-only text', () => {
-    expect(buildVocabularyHint(['привет, как дела'])).toBe(`${PREFIX}.`);
+    expect(buildVocabularyHint(['привет, как дела'])).toBe(DEFAULT_TRANSCRIPTION_PROMPT);
   });
 
   it('picks up Latin tokens from mixed-language text', () => {
@@ -49,7 +48,7 @@ describe('buildVocabularyHint', () => {
 
   it('bounds the length of the hint', () => {
     const words = Array.from({ length: 100 }, (_, i) => `longterm${i}abcdefghij`).join(' ');
-    expect(buildVocabularyHint([words]).length).toBeLessThan(700);
+    expect(buildVocabularyHint([words]).length).toBeLessThanOrEqual(1000);
   });
 
   it('appends the user keywords after history terms, using the term side of aliases', () => {
@@ -66,5 +65,39 @@ describe('buildVocabularyHint', () => {
     const words = Array.from({ length: 100 }, (_, i) => `longterm${i}abcdefghij`).join(' ');
     const hint = buildVocabularyHint([words], 'MyCustomTerm');
     expect(termsOf(hint).at(-1)).toBe('MyCustomTerm');
+  });
+
+  it('uses the custom text instead of the default and keeps the list after it', () => {
+    const prompt = 'Мой текст.';
+    const hint = buildVocabularyHint(['git commit'], undefined, prompt);
+    expect(hint).toBe('Мой текст. git, commit.');
+    expect(hint).not.toContain('Диктовка');
+  });
+
+  it('sends the list alone when the text is empty', () => {
+    expect(buildVocabularyHint(['git commit'], undefined, '')).toBe('git, commit.');
+    expect(buildVocabularyHint(['git commit'], undefined, '   ')).toBe('git, commit.');
+  });
+
+  it('sends nothing when both the text and the list are empty', () => {
+    expect(buildVocabularyHint([], undefined, '')).toBe('');
+  });
+
+  it('trims the list, not the text, when the text is long', () => {
+    const prompt = 'я'.repeat(950);
+    const words = Array.from({ length: 100 }, (_, i) => `longterm${i}abcdefghij`).join(' ');
+    const hint = buildVocabularyHint([words], undefined, prompt);
+    expect(hint.startsWith(`${prompt} `)).toBe(true);
+    expect(hint.length).toBeLessThanOrEqual(1000);
+    expect(hint.length).toBeGreaterThan(prompt.length + 1);
+  });
+
+  it('keeps the text and drops the list when the text fills the budget', () => {
+    const prompt = 'я'.repeat(1000);
+    expect(buildVocabularyHint(['git commit'], 'kubectl', prompt)).toBe(prompt);
+  });
+
+  it('cuts a text longer than the cap', () => {
+    expect(buildVocabularyHint(['git'], undefined, 'я'.repeat(1500)).length).toBe(1000);
   });
 });

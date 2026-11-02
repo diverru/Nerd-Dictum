@@ -32,6 +32,7 @@
   /* Widget-specific */
   --color-recording: #388e3c;
   --color-transcribing: #f57c00;
+  --color-polishing: #1976d2;
   --color-mic-idle: #c7c0b6;
   --color-tachometer-bg: rgba(0, 0, 0, 0.12);
   --color-tachometer-low: #1976d2;

@@ -85,6 +85,11 @@ const defaultSettings = {
   autoPasteEnabled: false,
   transcriptionMode: 'cloud' as const,
   cloudProvider: 'google' as const,
+  transcriptionPrompt: '',
+  polishEnabled: false,
+  polishPrompt: '',
+  polishMinChars: 57,
+  polishModel: 'gpt-5.4-nano',
   providerConfigs: {},
   mediaPauseMode: 'duck' as const,
 };
@@ -119,6 +124,7 @@ const createMockElectronAPI = (overrides: Partial<typeof window.electronAPI> = {
   openExternalUrl: mock(() => Promise.resolve(true)),
   getAppVersion: mock(() => Promise.resolve('0.3.1')),
   getRecentTranscripts: mock(() => Promise.resolve([])),
+  getTranscriptHistory: mock(() => Promise.resolve([])),
   trackEvent: mock(() => Promise.resolve()),
   pauseMedia: mock(() => Promise.resolve()),
   resumeMedia: mock(() => Promise.resolve()),
@@ -142,6 +148,16 @@ const createMockElectronAPI = (overrides: Partial<typeof window.electronAPI> = {
   getErrorDetail: mock(() => Promise.resolve({ message: 'Unknown error' })),
   getPathForFile: mock((file: File) => `/mock/path/${file.name}`),
   readFileAsBase64: mock(() => Promise.resolve('')),
+  saveFailedRecording: mock(() => Promise.resolve({
+    filePath: '/mock/failed-recordings/recording-test.wav',
+    fileName: 'recording-test.wav',
+    sizeBytes: 1024,
+  })),
+  showItemInFolder: mock(() => Promise.resolve(true)),
+  retryFailedRecording: mock(() => Promise.resolve(true)),
+  onRetryTranscription: mock((_callback: (filePath: string) => void) => {
+    return () => {};
+  }),
   ...overrides,
 });
 
@@ -750,5 +766,327 @@ describe('App', () => {
         expect(recordingButton.className).toContain('recording');
       });
     });
+  });
+
+  describe('failed transcription is recoverable', () => {
+    const originalFetch = globalThis.fetch;
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    /** Record past MIN_TRANSCRIBE_DURATION_MS (1 s), then stop, so the audio is transcribed. */
+    async function recordAndStop() {
+      await act(async () => {
+        render(<App />);
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+      });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /stop recording/i })).toBeDefined();
+      });
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+      });
+    }
+
+    it('saves the recording to disk and opens the error window with it on a 503', async () => {
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response('<html><body>Service Unavailable</body></html>', { status: 503 }))
+      ) as unknown as typeof fetch;
+
+      const saveFailedRecording = mock(() => Promise.resolve({
+        filePath: '/mock/failed-recordings/recording-test.wav',
+        fileName: 'recording-test.wav',
+        sizeBytes: 4,
+      }));
+      const openErrorDetailWindow = mock(() => Promise.resolve(true));
+      window.electronAPI = createMockElectronAPI({ saveFailedRecording, openErrorDetailWindow });
+
+      await recordAndStop();
+
+      await waitFor(() => {
+        expect(saveFailedRecording).toHaveBeenCalled();
+      }, { timeout: 5000 });
+
+      await waitFor(() => {
+        expect(openErrorDetailWindow).toHaveBeenCalled();
+      }, { timeout: 5000 });
+
+      const detail = (openErrorDetailWindow.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(detail.audioFilePath).toBe('/mock/failed-recordings/recording-test.wav');
+      expect(detail.statusCode).toBe(503);
+    }, 15000);
+
+    it('still opens the error window when the audio could not be saved', async () => {
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response('boom', { status: 503 }))
+      ) as unknown as typeof fetch;
+
+      const openErrorDetailWindow = mock(() => Promise.resolve(true));
+      window.electronAPI = createMockElectronAPI({
+        saveFailedRecording: mock(() => Promise.resolve(null)),
+        openErrorDetailWindow,
+      });
+
+      await recordAndStop();
+
+      await waitFor(() => {
+        expect(openErrorDetailWindow).toHaveBeenCalled();
+      }, { timeout: 5000 });
+
+      const detail = (openErrorDetailWindow.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(detail.audioFilePath).toBeUndefined();
+    }, 15000);
+
+    it('re-transcribes a saved file when the error window asks for a retry', async () => {
+      let retryCallback: ((filePath: string) => void) | null = null;
+      const readFileAsBase64 = mock(() => Promise.resolve(''));
+      window.electronAPI = createMockElectronAPI({
+        readFileAsBase64,
+        onRetryTranscription: mock((callback: (filePath: string) => void) => {
+          retryCallback = callback;
+          return () => {};
+        }),
+      });
+
+      await act(async () => {
+        render(<App />);
+      });
+
+      expect(retryCallback).not.toBeNull();
+
+      await act(async () => {
+        retryCallback!('/mock/failed-recordings/recording-test.wav');
+      });
+
+      await waitFor(() => {
+        expect(readFileAsBase64).toHaveBeenCalledWith('/mock/failed-recordings/recording-test.wav');
+      });
+    });
+
+    /** Mount the app and return the callback the error window's Retry button reaches. */
+    async function mountWithRetryHook(overrides: Parameters<typeof createMockElectronAPI>[0]) {
+      let retryCallback: ((filePath: string) => void) | null = null;
+      window.electronAPI = createMockElectronAPI({
+        ...overrides,
+        onRetryTranscription: mock((callback: (filePath: string) => void) => {
+          retryCallback = callback;
+          return () => {};
+        }),
+      });
+      await act(async () => {
+        render(<App />);
+      });
+      return (filePath: string) => retryCallback!(filePath);
+    }
+
+    const savedAudioBase64 = Buffer.from('opus-bytes').toString('base64');
+
+    it('retries a saved recording in local mode, converting it to WAV first', async () => {
+      const decodeAudioData = mock(() =>
+        Promise.resolve({
+          length: 4,
+          numberOfChannels: 1,
+          sampleRate: 16000,
+          getChannelData: () => new Float32Array([0.1, 0.2, 0.3, 0.4]),
+        })
+      );
+      (globalThis as unknown as { AudioContext: unknown }).AudioContext = class {
+        decodeAudioData = decodeAudioData;
+        close = () => Promise.resolve();
+      };
+      const transcribeLocalStt = mock((_wav: string) =>
+        Promise.resolve({ ok: true as const, text: 'local retry text', elapsedMs: 5 })
+      );
+      const copyToClipboard = mock(() => Promise.resolve(true));
+      const retry = await mountWithRetryHook({
+        getSettings: mock(() =>
+          Promise.resolve({ ...defaultSettings, transcriptionMode: 'local' as const })
+        ),
+        readFileAsBase64: mock(() => Promise.resolve(savedAudioBase64)),
+        transcribeLocalStt,
+        copyToClipboard,
+      });
+
+      await act(async () => {
+        retry('/mock/failed-recordings/recording-test.webm');
+      });
+
+      await waitFor(() => {
+        expect(copyToClipboard).toHaveBeenCalled();
+      });
+      expect(decodeAudioData).toHaveBeenCalled();
+      const sentWav = Buffer.from(transcribeLocalStt.mock.calls[0][0], 'base64');
+      expect(sentWav.toString('ascii', 0, 4)).toBe('RIFF');
+      expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe('local retry text');
+    });
+
+    it('retries a saved recording through OpenAI when the mode was switched to it', async () => {
+      const fetchMock = mock(() =>
+        Promise.resolve(new Response(JSON.stringify({ text: 'cloud retry text' }), { status: 200 }))
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const copyToClipboard = mock(() => Promise.resolve(true));
+      const transcribeLocalStt = mock(() => Promise.resolve({ ok: false as const, error: 'unused' }));
+      const retry = await mountWithRetryHook({
+        getSettings: mock(() =>
+          Promise.resolve({
+            ...defaultSettings,
+            transcriptionMode: 'cloud' as const,
+            cloudProvider: 'openai' as const,
+            providerConfigs: { openai: { apiKey: 'sk-test', model: 'gpt-transcribe' } },
+          })
+        ),
+        readFileAsBase64: mock(() => Promise.resolve(savedAudioBase64)),
+        transcribeLocalStt,
+        copyToClipboard,
+      });
+
+      await act(async () => {
+        retry('/mock/failed-recordings/recording-test.webm');
+      });
+
+      await waitFor(() => {
+        expect(copyToClipboard).toHaveBeenCalled();
+      });
+      expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+        'https://api.openai.com/v1/audio/transcriptions'
+      );
+      expect(transcribeLocalStt).not.toHaveBeenCalled();
+      expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe('cloud retry text');
+    });
+
+    describe('polish', () => {
+      const rawText = 'ну вот э-э это текст для проверки';
+      const polishSettings = {
+        ...defaultSettings,
+        transcriptionMode: 'cloud' as const,
+        cloudProvider: 'openai' as const,
+        providerConfigs: { openai: { apiKey: 'sk-test', model: 'gpt-transcribe' } },
+        polishEnabled: true,
+        polishPrompt: 'Мой промпт',
+        polishMinChars: 0,
+      };
+
+      /** Fetch mock: OpenAI transcription returns rawText, the chat endpoint is `chat`. */
+      function mockOpenAI(chat: (init: RequestInit) => Promise<Response>) {
+        const fetchMock = mock((url: string, init: RequestInit) =>
+          url.includes('transcriptions')
+            ? Promise.resolve(new Response(JSON.stringify({ text: rawText }), { status: 200 }))
+            : chat(init)
+        );
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+        return fetchMock;
+      }
+
+      async function retrySaved(settings: Record<string, unknown>) {
+        const copyToClipboard = mock(() => Promise.resolve(true));
+        const retry = await mountWithRetryHook({
+          getSettings: mock(() => Promise.resolve(settings as typeof defaultSettings)),
+          readFileAsBase64: mock(() => Promise.resolve(savedAudioBase64)),
+          copyToClipboard,
+        });
+        await act(async () => {
+          retry('/mock/failed-recordings/recording-test.webm');
+        });
+        return copyToClipboard;
+      }
+
+      it('pastes the polished text, whatever the model changed, with the instruction from settings', async () => {
+        const fetchMock = mockOpenAI(() =>
+          Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: 'Это текст для проверки.' } }] })))
+        );
+        const copyToClipboard = await retrySaved(polishSettings);
+        await waitFor(() => expect(copyToClipboard).toHaveBeenCalled());
+        expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe('Это текст для проверки.');
+        const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+        const body = JSON.parse(init.body as string);
+        expect(body.messages[0].content.startsWith('Мой промпт')).toBe(true);
+        expect(body.messages[1].content).toBe(rawText);
+      });
+
+      it('shows the polishing state while the request is in flight', async () => {
+        let finish!: (response: Response) => void;
+        mockOpenAI(() => new Promise<Response>((resolve) => { finish = resolve; }));
+        const copyToClipboard = await retrySaved(polishSettings);
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /cancel transcription/i }).className).toContain('polishing');
+        });
+        await act(async () => {
+          finish(new Response(JSON.stringify({ choices: [{ message: { content: 'готово' } }] })));
+        });
+        await waitFor(() => expect(copyToClipboard).toHaveBeenCalled());
+      });
+
+      it('pastes the raw transcript when the polish request fails', async () => {
+        mockOpenAI(() => Promise.resolve(new Response('boom', { status: 500 })));
+        const copyToClipboard = await retrySaved(polishSettings);
+        await waitFor(() => expect(copyToClipboard).toHaveBeenCalled());
+        expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe(rawText);
+      });
+
+      it('skips polish for a transcript shorter than the minimum length', async () => {
+        const fetchMock = mockOpenAI(() => Promise.reject(new Error('must not be called')));
+        const copyToClipboard = await retrySaved({ ...polishSettings, polishMinChars: rawText.length + 1 });
+        await waitFor(() => expect(copyToClipboard).toHaveBeenCalled());
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe(rawText);
+      });
+
+      it('makes no polish request when the option is off', async () => {
+        const fetchMock = mockOpenAI(() => Promise.reject(new Error('must not be called')));
+        const copyToClipboard = await retrySaved({ ...polishSettings, polishEnabled: false });
+        await waitFor(() => expect(copyToClipboard).toHaveBeenCalled());
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((copyToClipboard.mock.calls[0] as unknown as [string])[0]).toBe(rawText);
+      });
+    });
+
+    it('saves the recording when a local transcription fails', async () => {
+      const saveFailedRecording = mock(() => Promise.resolve({
+        filePath: '/mock/failed-recordings/recording-test.webm',
+        fileName: 'recording-test.webm',
+        sizeBytes: 4,
+      }));
+      const openErrorDetailWindow = mock(() => Promise.resolve(true));
+      const transcribeLocalStt = mock(() => Promise.resolve({ ok: false as const, error: 'bridge crashed' }));
+      window.electronAPI = createMockElectronAPI({
+        getSettings: mock(() =>
+          Promise.resolve({ ...defaultSettings, transcriptionMode: 'local' as const })
+        ),
+        transcribeLocalStt,
+        saveFailedRecording,
+        openErrorDetailWindow,
+      });
+      // The recorder and the WAV conversion both build an AudioContext.
+      (globalThis as unknown as { AudioContext: unknown }).AudioContext = mock(() => ({
+        ...createMockAudioContext(),
+        decodeAudioData: () =>
+          Promise.resolve({
+            length: 1,
+            numberOfChannels: 1,
+            sampleRate: 16000,
+            getChannelData: () => new Float32Array([0]),
+          }),
+      }));
+
+      await recordAndStop();
+
+      await waitFor(() => {
+        expect(saveFailedRecording).toHaveBeenCalled();
+        expect(openErrorDetailWindow).toHaveBeenCalled();
+      }, { timeout: 5000 });
+      expect(transcribeLocalStt).toHaveBeenCalled();
+      const detail = (openErrorDetailWindow.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(detail.audioFilePath).toBe('/mock/failed-recordings/recording-test.webm');
+    }, 15000);
   });
 });

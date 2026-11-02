@@ -2,7 +2,9 @@
  * Mock implementation of electronAPI for browser development.
  * This allows the UI to be developed and tested without Electron.
  */
-import type { AppSettings, MicrophonePermissionStatus, StatsWithDerived, ErrorDetail } from '../types/electron';
+import type { AppSettings, MicrophonePermissionStatus, StatsWithDerived, ErrorDetail, SavedRecording } from '../types/electron';
+import { DEFAULT_TRANSCRIPTION_PROMPT } from '../../lib/openai-stt';
+import { DEFAULT_POLISH_MODEL, DEFAULT_POLISH_PROMPT, DEFAULT_POLISH_MIN_CHARS } from '../../lib/polish';
 
 const defaultSettings: AppSettings = {
   apiKey: '',
@@ -26,6 +28,11 @@ const defaultSettings: AppSettings = {
   autoPasteEnabled: false,
   transcriptionMode: 'cloud',
   cloudProvider: 'google',
+  transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
+  polishEnabled: false,
+  polishPrompt: DEFAULT_POLISH_PROMPT,
+  polishMinChars: DEFAULT_POLISH_MIN_CHARS,
+  polishModel: DEFAULT_POLISH_MODEL,
   providerConfigs: {},
   mediaPauseMode: 'duck',
 };
@@ -167,6 +174,10 @@ export function setupElectronAPIMock() {
       return mockRecentTranscripts;
     },
 
+    getTranscriptHistory: async (): Promise<string[]> => {
+      return mockRecentTranscripts;
+    },
+
     openHideWindow: async (): Promise<boolean> => {
       console.log('[Mock] Would open hide window');
       return true;
@@ -232,6 +243,30 @@ export function setupElectronAPIMock() {
 
     getErrorDetail: async (): Promise<ErrorDetail> => {
       return { message: 'Mock error' };
+    },
+
+    saveFailedRecording: async (audioBase64: string, mimeType?: string): Promise<SavedRecording | null> => {
+      console.log('[Mock] Would save failed recording:', mimeType, audioBase64.length, 'base64 chars');
+      return {
+        filePath: '/mock/failed-recordings/recording-mock.wav',
+        fileName: 'recording-mock.wav',
+        sizeBytes: Math.floor((audioBase64.length * 3) / 4),
+      };
+    },
+
+    showItemInFolder: async (filePath: string): Promise<boolean> => {
+      console.log('[Mock] Would reveal file:', filePath);
+      return true;
+    },
+
+    retryFailedRecording: async (filePath: string): Promise<boolean> => {
+      console.log('[Mock] Would retry recording:', filePath);
+      return true;
+    },
+
+    onRetryTranscription: (_callback: (filePath: string) => void): (() => void) => {
+      // No-op for browser mock - retry comes from the Electron error window
+      return () => {};
     },
 
     getPathForFile: (file: File): string => {

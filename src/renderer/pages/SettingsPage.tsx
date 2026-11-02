@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { AppSettings, HoldToRecordKey, CloudProvider } from '../../shared/types';
-import { DEFAULT_OPENAI_MODEL } from '../../lib/openai-stt';
+import { DEFAULT_OPENAI_MODEL, DEFAULT_TRANSCRIPTION_PROMPT } from '../../lib/openai-stt';
+import { DEFAULT_POLISH_MODEL, DEFAULT_POLISH_PROMPT, DEFAULT_POLISH_MIN_CHARS } from '../../lib/polish';
 
 // Hold-to-record key options
 const HOLD_TO_RECORD_KEYS: Array<{ value: HoldToRecordKey; label: string }> = [
@@ -151,6 +152,11 @@ export function SettingsPage() {
   const [autoPasteEnabled, setAutoPasteEnabled] = useState(false);
   const [transcriptionMode, setTranscriptionMode] = useState<'cloud' | 'local'>('cloud');
   const [cloudProvider, setCloudProvider] = useState<CloudProvider>('google');
+  const [transcriptionPrompt, setTranscriptionPrompt] = useState(DEFAULT_TRANSCRIPTION_PROMPT);
+  const [polishEnabled, setPolishEnabled] = useState(false);
+  const [polishPrompt, setPolishPrompt] = useState(DEFAULT_POLISH_PROMPT);
+  const [polishModel, setPolishModel] = useState(DEFAULT_POLISH_MODEL);
+  const [polishMinChars, setPolishMinChars] = useState(DEFAULT_POLISH_MIN_CHARS);
   const [providerConfigs, setProviderConfigs] = useState<AppSettings['providerConfigs']>({});
   const [providerModelLists, setProviderModelLists] = useState<Partial<Record<CloudProvider, Array<{ id: string; displayName: string }>>>>({});
   const [providerModelsError, setProviderModelsError] = useState<Partial<Record<CloudProvider, string>>>({});
@@ -191,6 +197,11 @@ export function SettingsPage() {
     autoPasteEnabled: boolean;
     transcriptionMode: 'cloud' | 'local';
     cloudProvider: CloudProvider;
+    transcriptionPrompt: string;
+    polishEnabled: boolean;
+    polishPrompt: string;
+    polishMinChars: number;
+    polishModel: string;
     providerConfigs: AppSettings['providerConfigs'];
     mediaPauseMode: 'duck' | 'mute' | 'none';
   } | null>(null);
@@ -227,6 +238,11 @@ export function SettingsPage() {
       autoPasteEnabled !== initial.autoPasteEnabled ||
       transcriptionMode !== initial.transcriptionMode ||
       cloudProvider !== initial.cloudProvider ||
+      transcriptionPrompt.trim() !== initial.transcriptionPrompt ||
+      polishEnabled !== initial.polishEnabled ||
+      polishPrompt.trim() !== initial.polishPrompt ||
+      polishMinChars !== initial.polishMinChars ||
+      polishModel.trim() !== initial.polishModel ||
       JSON.stringify(providerConfigs) !== JSON.stringify(initial.providerConfigs) ||
       mediaPauseMode !== initial.mediaPauseMode
     );
@@ -252,6 +268,11 @@ export function SettingsPage() {
     autoPasteEnabled,
     transcriptionMode,
     cloudProvider,
+    transcriptionPrompt,
+    polishEnabled,
+    polishPrompt,
+    polishMinChars,
+    polishModel,
     providerConfigs,
     mediaPauseMode,
   ]);
@@ -347,6 +368,11 @@ export function SettingsPage() {
         const loadedAutoPasteEnabled = settings.autoPasteEnabled ?? false;
         const loadedTranscriptionMode = settings.transcriptionMode || 'cloud';
         const loadedCloudProvider = settings.cloudProvider || 'google';
+        const loadedTranscriptionPrompt = settings.transcriptionPrompt ?? DEFAULT_TRANSCRIPTION_PROMPT;
+        const loadedPolishEnabled = settings.polishEnabled ?? false;
+        const loadedPolishPrompt = settings.polishPrompt ?? DEFAULT_POLISH_PROMPT;
+        const loadedPolishMinChars = settings.polishMinChars ?? DEFAULT_POLISH_MIN_CHARS;
+        const loadedPolishModel = settings.polishModel || DEFAULT_POLISH_MODEL;
         const loadedProviderConfigs = settings.providerConfigs || {};
         const loadedMediaPauseMode = (settings.mediaPauseMode as 'duck' | 'mute' | 'none') || 'duck';
 
@@ -370,6 +396,11 @@ export function SettingsPage() {
         setAutoPasteEnabled(loadedAutoPasteEnabled);
         setTranscriptionMode(loadedTranscriptionMode);
         setCloudProvider(loadedCloudProvider);
+        setTranscriptionPrompt(loadedTranscriptionPrompt);
+        setPolishEnabled(loadedPolishEnabled);
+        setPolishPrompt(loadedPolishPrompt);
+        setPolishMinChars(loadedPolishMinChars);
+        setPolishModel(loadedPolishModel);
         setProviderConfigs(loadedProviderConfigs);
         setMediaPauseMode(loadedMediaPauseMode);
 
@@ -396,6 +427,11 @@ export function SettingsPage() {
           autoPasteEnabled: loadedAutoPasteEnabled,
           transcriptionMode: loadedTranscriptionMode,
           cloudProvider: loadedCloudProvider,
+          transcriptionPrompt: loadedTranscriptionPrompt,
+          polishEnabled: loadedPolishEnabled,
+          polishPrompt: loadedPolishPrompt,
+          polishMinChars: loadedPolishMinChars,
+          polishModel: loadedPolishModel,
           providerConfigs: loadedProviderConfigs,
           mediaPauseMode: loadedMediaPauseMode,
         };
@@ -492,6 +528,11 @@ export function SettingsPage() {
         autoPasteEnabled,
         transcriptionMode,
         cloudProvider,
+        transcriptionPrompt: transcriptionPrompt.trim(),
+        polishEnabled,
+        polishPrompt: polishPrompt.trim(),
+        polishMinChars,
+        polishModel: polishModel.trim() || DEFAULT_POLISH_MODEL,
         providerConfigs,
         mediaPauseMode,
       });
@@ -519,6 +560,11 @@ export function SettingsPage() {
           autoPasteEnabled,
           transcriptionMode,
           cloudProvider,
+          transcriptionPrompt: transcriptionPrompt.trim(),
+          polishEnabled,
+          polishPrompt: polishPrompt.trim(),
+          polishMinChars,
+          polishModel: polishModel.trim() || DEFAULT_POLISH_MODEL,
           providerConfigs,
           mediaPauseMode,
         };
@@ -760,6 +806,21 @@ export function SettingsPage() {
               </div>
             )}
 
+            {transcriptionMode === 'cloud' && cloudProvider === 'openai' && (
+              <div className="settings-field">
+                <label htmlFor="transcription-prompt">Transcription prompt</label>
+                <textarea
+                  id="transcription-prompt"
+                  value={transcriptionPrompt}
+                  onChange={(e) => setTranscriptionPrompt(e.target.value)}
+                  rows={4}
+                />
+                <span className="settings-hint">
+                  Sent to OpenAI with every recording. A list of terms from your recent transcripts and your custom keywords is added after it. Leave empty to send the list alone.
+                </span>
+              </div>
+            )}
+
             {transcriptionMode === 'cloud' && (() => {
               // The provider dropdown drives the credentials block.
               const activeProvider = cloudProvider;
@@ -875,6 +936,58 @@ export function SettingsPage() {
                 </>
               );
             })()}
+
+            {transcriptionMode === 'cloud' && (
+              <div className="settings-field">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={polishEnabled}
+                    onChange={(e) => setPolishEnabled(e.target.checked)}
+                  />
+                  <span>Polish transcript</span>
+                </label>
+                <span className="settings-hint">
+                  {cloudProvider === 'openai'
+                    ? 'After transcription, a small OpenAI model rewrites the text by the prompt below. This is a second request; if it fails or times out, the raw transcript is used.'
+                    : 'Works only with the OpenAI provider. Ignored while Google is selected.'}
+                </span>
+                {polishEnabled && (
+                  <>
+                    <label htmlFor="polish-prompt" style={{ marginTop: 8 }}>Polish prompt</label>
+                    <textarea
+                      id="polish-prompt"
+                      value={polishPrompt}
+                      onChange={(e) => setPolishPrompt(e.target.value)}
+                      rows={5}
+                    />
+                    <label htmlFor="polish-min-chars" style={{ marginTop: 8 }}>Minimum transcript length (characters)</label>
+                    <input
+                      id="polish-min-chars"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={polishMinChars}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value, 10);
+                        setPolishMinChars(Number.isFinite(value) && value >= 0 ? value : 0);
+                      }}
+                    />
+                    <span className="settings-hint">
+                      Shorter transcripts are pasted as they are, without the second request. 0 polishes everything.
+                    </span>
+                    <label htmlFor="polish-model" style={{ marginTop: 8 }}>Polish model</label>
+                    <input
+                      id="polish-model"
+                      type="text"
+                      value={polishModel}
+                      onChange={(e) => setPolishModel(e.target.value)}
+                      placeholder={DEFAULT_POLISH_MODEL}
+                    />
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="settings-field">
               <label className="checkbox-label">

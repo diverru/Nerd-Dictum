@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   getRecentTranscripts: () => ipcRenderer.invoke('get-recent-transcripts'),
+  getTranscriptHistory: () => ipcRenderer.invoke('get-transcript-history'),
   hideForDuration: (durationMs: number) => ipcRenderer.invoke('hide-for-duration', durationMs),
   trackEvent: (name: string, params?: Record<string, string | number>) =>
     ipcRenderer.invoke('track-event', name, params ?? {}),
@@ -98,9 +99,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   recordTranscriptionStats: (transcript: string, recordingDurationMs: number) =>
     ipcRenderer.invoke('record-transcription-stats', transcript, recordingDurationMs),
   // Error detail
-  openErrorDetailWindow: (detail: { message: string; statusCode?: number; responseBody?: string }) =>
-    ipcRenderer.invoke('open-error-detail-window', detail),
+  openErrorDetailWindow: (detail: {
+    message: string;
+    statusCode?: number;
+    responseBody?: string;
+    audioFilePath?: string;
+    audioFileName?: string;
+    audioSizeBytes?: number;
+  }) => ipcRenderer.invoke('open-error-detail-window', detail),
   getErrorDetail: () => ipcRenderer.invoke('get-error-detail'),
+  // Failed recordings
+  saveFailedRecording: (audioBase64: string, mimeType?: string) =>
+    ipcRenderer.invoke('save-failed-recording', audioBase64, mimeType),
+  showItemInFolder: (filePath: string) => ipcRenderer.invoke('show-item-in-folder', filePath),
+  retryFailedRecording: (filePath: string) => ipcRenderer.invoke('retry-failed-recording', filePath),
+  onRetryTranscription: (callback: (filePath: string) => void) => {
+    const listener = (_event: unknown, filePath: string) => callback(filePath);
+    ipcRenderer.on('retry-transcription', listener);
+    return () => {
+      ipcRenderer.removeListener('retry-transcription', listener);
+    };
+  },
   // File operations
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   readFileAsBase64: (filePath: string) => ipcRenderer.invoke('read-file-as-base64', filePath),
