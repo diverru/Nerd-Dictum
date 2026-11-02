@@ -2,9 +2,11 @@
 
 ## 2026-10-29 (diverru fork)
 
-[2026-10-29] Removed — Auto-paste no longer restores the previous clipboard. It used to snapshot the clipboard, write the transcript, press Cmd+V and put the snapshot back 250 ms later; an app that handled the keystroke after that window pasted the old content instead of the transcript. The transcript now simply stays in the clipboard.
+[2026-10-29] Removed — Auto-paste no longer restores the previous clipboard. It used to snapshot the clipboard, write the transcript, press Cmd+V and put the snapshot back 250 ms later; an app that handled the keystroke after that window pasted the old content instead of the transcript. The transcript now simply stays in the clipboard, and `clipboard-snapshot.ts` is gone.
 
 ## 2026-10-16 (diverru fork)
+
+[2026-10-16] Removed — Clipboard history: the "Previous Clipboard" tray submenu and the Cmd+Shift+V shortcut that restored earlier clipboard contents. Auto-paste still puts your previous clipboard back after pasting (that code moved to `clipboard-snapshot.ts`).
 
 [2026-10-16] Dependencies — Electron 35 to 42, and `shell-quote` overridden to `^1.8.4` for CVE-2026-9277 (both from upstream). Since Electron 42 the `electron` package no longer downloads its binary on install; it is fetched the first time it runs.
 
