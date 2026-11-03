@@ -391,6 +391,7 @@ export function SettingsPage() {
         setSoundEnabled(loadedSoundEnabled);
         setHotkey(loadedHotkey);
         setWidgetHidden(loadedWidgetHidden);
+        setWidgetStyle(loadedWidgetStyle);
         setHoldToRecordEnabled(loadedHoldToRecordEnabled);
         setHoldToRecordKey(loadedHoldToRecordKey);
         setAutoPasteEnabled(loadedAutoPasteEnabled);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-03 (diverru fork)
+
+[2026-11-03] Fixed — Opening settings with the minimal widget selected no longer reports unsaved changes after browsing tabs. The form now loads the saved widget style alongside its comparison snapshot. Regression: `bun test src/renderer/pages/SettingsPage.test.tsx`.
+
 ## 2026-11-02 (diverru fork)
 
 [2026-11-02] Network — Cloud transcription (Gemini/OpenAI) and OpenAI polish now run in the main process through its shared Node HTTP pool. Idle connections are retained for up to 10 minutes, with TCP keepalive probes starting after 30 seconds; servers may close them earlier. Cancellation and API error details are preserved across IPC. No periodic API requests are sent. Verify with `bun test src/main/cloud-requests.test.ts src/main/provider-network.test.ts src/renderer/App.test.tsx`; manually check both providers, cancellation, and OpenAI polish after restarting the app.

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { SettingsPage } from './SettingsPage';
+import type { AppSettings } from '../../shared/types';
 import { ThemeProvider } from '../contexts/ThemeContext';
 
-const defaultSettings = {
+const defaultSettings: AppSettings = {
   apiKey: 'test-api-key',
   model: 'gemini-3-flash-preview',
   languages: ['en'],
@@ -16,6 +17,22 @@ const defaultSettings = {
   launchAtStartup: false,
   clarificationEnabled: true,
   previousTranscriptContextEnabled: true,
+  soundEnabled: true,
+  hotkey: 'CommandOrControl+Shift+R',
+  widgetHidden: false,
+  widgetStyle: 'full',
+  holdToRecordEnabled: true,
+  holdToRecordKey: 'LeftAlt',
+  autoPasteEnabled: false,
+  transcriptionMode: 'cloud',
+  cloudProvider: 'google',
+  transcriptionPrompt: '',
+  polishEnabled: false,
+  polishPrompt: '',
+  polishMinChars: 57,
+  polishModel: 'gpt-5.4-nano',
+  providerConfigs: {},
+  mediaPauseMode: 'duck',
 };
 
 const createMockElectronAPI = (overrides: Partial<typeof window.electronAPI> = {}) => ({
@@ -94,6 +111,21 @@ describe('SettingsPage - Unsaved Changes Dialog', () => {
 
     // Window should close immediately
     expect(mockAPI.closeSettingsWindow).toHaveBeenCalled();
+  });
+
+  it('keeps a saved minimal widget unchanged while browsing settings tabs', async () => {
+    const mockAPI = createMockElectronAPI({
+      getSettings: mock(() => Promise.resolve({ ...defaultSettings, widgetStyle: 'minimal' as const })),
+    });
+    renderSettingsPage(mockAPI);
+    await waitFor(() => expect(screen.queryByText('Loading...')).toBeNull());
+    for (const name of ['Appearance', 'Languages', 'Advanced', 'General']) {
+      fireEvent.click(screen.getByRole('tab', { name }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Unsaved Changes') === null).toBe(true);
+    expect(mockAPI.closeSettingsWindow).toHaveBeenCalled();
+    expect(mockAPI.saveSettings).not.toHaveBeenCalled();
   });
 
   it('should show dialog when Cancel is clicked with unsaved changes', async () => {
