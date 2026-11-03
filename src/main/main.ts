@@ -19,6 +19,7 @@ import { DEFAULT_POLISH_MODEL, DEFAULT_POLISH_PROMPT, DEFAULT_POLISH_MIN_CHARS }
 import type { CloudProvider } from '../shared/types';
 import { startMemoryLog, stopMemoryLog } from './memory-log';
 import { saveFailedRecording, FAILED_RECORDINGS_DIR_NAME } from './failed-recordings';
+import { pasteWithClipboardRestore } from './macos-auto-paste';
 import type { AppSettings } from '../shared/types';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1644,82 +1645,42 @@ app.on('activate', () => {
 });
 
 // IPC handlers
-ipcMain.handle('copy-to-clipboard', async (_event, text: string, autoPaste = false) => {
-  log('[Clipboard] Copying transcript (' + text.length + ' chars):', text);
-  const willAutoPaste = autoPaste && appSettings.autoPasteEnabled;
-  clipboard.writeText(text);
-  // Store transcript for context feature
-  addTranscriptToHistory(text);
-
-  if (willAutoPaste) {
-    log('[Clipboard] Auto-paste branch hit — dispatching keystroke');
-    // Wait until the V keystroke has actually been dispatched before
-    // returning, so the renderer's "success" state lights up only after
-    // the paste lands — not before.
-    await pasteIntoActiveWindow();
-  } else {
-    log(
-      `[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`
-    );
-  }
-  return true;
+// Serialize the whole transaction so a second dictation cannot snapshot the first.
+let clipboardOperation: Promise<unknown> = Promise.resolve();
+ipcMain.handle('copy-to-clipboard', (_event, text: string, autoPaste = false) => {
+  const operation = clipboardOperation.then(() => copyTranscript(text, autoPaste));
+  clipboardOperation = operation.catch(() => {});
+  return operation;
 });
 
-/**
- * Simulate Cmd+V into the currently-focused window so the just-copied
- * transcript lands at the user's cursor without keyboard interaction.
- *
- * Uses `key code 9 using command down` rather than `keystroke "v"` —
- * Electron-based apps (Cursor, VS Code, Slack, …) ignore the
- * character-style `keystroke` form and only react to real keyDown / keyUp
- * pairs that `key code` produces.
- *
- * Requires Accessibility permission. We call
- * isTrustedAccessibilityClient(true) to surface the system prompt the
- * first time, and skip the keystroke (with a clear log line) when the
- * permission isn't granted yet.
- */
-function pasteIntoActiveWindow(): Promise<void> {
+async function copyTranscript(text: string, autoPaste: boolean): Promise<boolean> {
+  log('[Clipboard] Copying transcript (' + text.length + ' chars):', text);
+  const willAutoPaste = autoPaste && appSettings.autoPasteEnabled;
+  addTranscriptToHistory(text);
+
+  if (willAutoPaste && process.platform === 'darwin') {
+    const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+    if (trusted) {
+      await pasteWithClipboardRestore(text, log);
+    } else {
+      clipboard.writeText(text);
+      log('[AutoPaste] Accessibility permission missing; transcript left for manual paste');
+    }
+  } else {
+    clipboard.writeText(text);
+    if (willAutoPaste) {
+      await pasteOnOtherPlatforms();
+    } else {
+      log(`[Clipboard] Auto-paste SKIPPED: autoPasteArg=${autoPaste}, settingEnabled=${appSettings.autoPasteEnabled}`);
+    }
+  }
+  return true;
+}
+
+// Keep the existing keystroke path on Windows and Linux.
+function pasteOnOtherPlatforms(): Promise<void> {
   return new Promise<void>((resolve) => {
-    if (process.platform === 'darwin') {
-      const trusted = systemPreferences.isTrustedAccessibilityClient(true);
-      log(`[AutoPaste] Accessibility trusted=${trusted}`);
-      if (!trusted) {
-        log('[AutoPaste] Accessibility permission missing — paste will not work until granted');
-        // The transcript stays on the clipboard so the user can paste it
-        // manually. Resolve immediately so the success state still flips.
-        resolve();
-        return;
-      }
-      // Small delay so the source window can regain focus and the clipboard
-      // write is observable to the destination.
-      setTimeout(() => {
-        const clipNow = clipboard.readText();
-        log(
-          `[AutoPaste] pre-keystroke: clipboard.length=${clipNow.length} clipboard="${clipNow.replace(/\n/g, '\\n')}"`,
-        );
-        exec(
-          `osascript -e 'tell application "System Events" to set frontApp to name of first application process whose frontmost is true' -e 'return frontApp'`,
-          (frontErr, frontStdout) => {
-            const frontApp = frontStdout?.trim() || '(unknown)';
-            log(`[AutoPaste] frontmost app at paste time: "${frontApp}"${frontErr ? ` (err: ${frontErr.message})` : ''}`);
-            const script = `tell application "System Events" to key code 9 using command down`;
-            log('[AutoPaste] osascript dispatch');
-            exec(
-              `osascript -e '${script}'`,
-              (error, _stdout, stderr) => {
-                if (error) {
-                  log('[AutoPaste] Failed:', error.message, '| stderr:', stderr);
-                } else {
-                  log('[AutoPaste] keystroke dispatched OK');
-                }
-                resolve();
-              },
-            );
-          },
-        );
-      }, 50);
-    } else if (process.platform === 'win32') {
+    if (process.platform === 'win32') {
       setTimeout(() => {
         const psScript = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')`;
         exec(`powershell -NoProfile -Command "${psScript}"`, (error) => {

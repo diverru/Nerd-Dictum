@@ -150,6 +150,11 @@ Gemini-direct dictation:
 - **Auto-paste** the transcript via `osascript` `key code 9 using command
   down`. Cursor / VS Code accept this form (they ignore `keystroke "v"`).
   Gated by Accessibility permission and the `autoPasteEnabled` setting.
+  On macOS, `src/main/macos-auto-paste.ts` snapshots every pasteboard item
+  and format, then restores it 1.5 s after Cmd+V dispatch if `changeCount`
+  still belongs to that write. Clipboard operations are serialized; failed
+  dispatch leaves the transcript for manual paste. The grace period does
+  not acknowledge consumption by the target application.
 - **Anti-hallucination**: silence-handling rule sandwiched at top and
   bottom of the prompt; min 1 s recording duration; the renderer drops
   results that exactly echo a recent transcript or a single keyword from

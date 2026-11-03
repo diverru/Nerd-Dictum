@@ -2,6 +2,8 @@
 
 ## 2026-11-03 (diverru fork)
 
+[2026-11-03] Auto-paste — On macOS, restore the previous clipboard 1.5 seconds after Cmd+V dispatch. A native pasteboard snapshot preserves every item and format; changeCount checks avoid overwriting a newer copy (including identical text) or pasting after ownership changed. Clipboard operations are serialized. Missing Accessibility permission or failed dispatch leaves the transcript for manual paste. The grace period is not a target-app acknowledgement; very delayed apps can still read too late. Verify with `bun test src/main/macos-auto-paste.test.ts` (private test pasteboards; no keystrokes sent).
+
 [2026-11-03] Fixed — Opening settings with the minimal widget selected no longer reports unsaved changes after browsing tabs. The form now loads the saved widget style alongside its comparison snapshot. Regression: `bun test src/renderer/pages/SettingsPage.test.tsx`.
 
 ## 2026-11-02 (diverru fork)
